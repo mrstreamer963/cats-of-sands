@@ -1,0 +1,4 @@
+/node_modules/
+/dist/
+/simulation/target/
+/simulation/pkg/

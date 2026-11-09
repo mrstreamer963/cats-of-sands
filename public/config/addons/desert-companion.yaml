@@ -1,0 +1,10 @@
+entities:
+  cat:
+    speed: 150
+  companion:
+    position:
+      x: 40
+      y: 230
+    speed: 90
+    radius: 14
+    color: "#80d8c4"

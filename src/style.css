@@ -1,0 +1,40 @@
+:root {
+  color-scheme: dark;
+  font: 1rem system-ui, sans-serif;
+  background: #211912;
+  color: #fff3df;
+}
+
+main {
+  max-width: 40rem;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+
+fieldset {
+  margin: 0 0 1rem;
+}
+
+label {
+  display: block;
+}
+
+input {
+  margin-inline-end: 0.5rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+}
+
+canvas {
+  width: 100%;
+  height: auto;
+  margin-top: 1rem;
+  background: #59412c;
+}
+
+#error {
+  color: #ffb7a4;
+}

@@ -1,0 +1,15 @@
+[package]
+name = "sand-simulation"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bevy_ecs = { version = "0.19.1", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_path_to_error = "0.1"
+serde-wasm-bindgen = "0.6"
+serde_yaml_ng = "0.10"
+wasm-bindgen = "0.2"
