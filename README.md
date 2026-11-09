@@ -18,7 +18,7 @@ npm run dev
 ## Сборка и проверка
 
 ```sh
-cargo test --locked --manifest-path simulation/Cargo.toml
+cargo test --locked --manifest-path core/Cargo.toml
 npm run build
 npm run preview
 ```

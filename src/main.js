@@ -1,4 +1,4 @@
-import init, { Session } from '../simulation/pkg/sand_simulation.js';
+import init, { Session } from '../core/pkg/sand_simulation.js';
 import { addons } from './addons.js';
 import './style.css';
 
