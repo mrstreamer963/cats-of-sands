@@ -4,13 +4,13 @@
 
 ## Запуск
 
-Понадобятся Node.js, совместимый с Vite 8 (20.19+ или 22.12+), Rust 1.95+ и `wasm-pack`.
+Понадобятся Node.js, совместимый с Vite 8 (20.19+ или 22.12+), Rust 1.95+, `wasm-pack` и `make`.
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack --locked
 npm ci
-npm run dev
+make dev
 ```
 
 Открой адрес, указанный Vite. Нажми «Запустить» для базовой сцены или включи «Пустынный спутник», чтобы ускорить первый объект и добавить второй. Изменения галочек сохраняются в браузере и применяются при следующем нажатии «Запустить».
@@ -18,10 +18,12 @@ npm run dev
 ## Сборка и проверка
 
 ```sh
-cargo test --locked --manifest-path core/Cargo.toml
+cargo test --locked
 npm run build
 npm run preview
 ```
+
+Если установлен `cargo-outdated`, проверку версий зависимостей можно запустить из корня командой `cargo outdated`.
 
 `dev` и `build` собирают WASM перед запуском Vite. После изменения Rust-кода перезапусти dev-сервер или выполни `npm run wasm`.
 
