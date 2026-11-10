@@ -23,6 +23,11 @@ input {
   margin-inline-end: 0.5rem;
 }
 
+select {
+  font: inherit;
+  margin-bottom: 1rem;
+}
+
 button {
   font: inherit;
   padding: 0.4rem 0.8rem;

@@ -1,5 +1,5 @@
-export const addonCatalogPath = 'config/addons.json';
-export const addonRoot = 'config/addons';
+export const addonRoot = 'addons';
+export const addonCatalogPath = addonRoot + '/addons.json';
 export const resourceManifest = 'resource.json';
 
 function isPathSegment(segment) {
@@ -17,17 +17,29 @@ export function validateAddonCatalog(folders) {
   return folders;
 }
 
+function validateYamlPaths(paths, field) {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.some(path =>
+    typeof path !== 'string' || !path.split('/').every(isPathSegment) || !/\.ya?ml$/i.test(path))) {
+    throw new Error(`поле ${field} должно содержать список относительных путей к YAML`);
+  }
+  if (new Set(paths).size !== paths.length) {
+    throw new Error(`пути в ${field} должны быть уникальными`);
+  }
+}
+
 export function validateResourceManifest(manifest) {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new Error('ожидается объект манифеста');
   }
-  const { layers } = manifest;
-  if (!Array.isArray(layers) || layers.length === 0 || layers.some(path =>
-    typeof path !== 'string' || !path.split('/').every(isPathSegment) || !/\.ya?ml$/i.test(path))) {
-    throw new Error('поле layers должно содержать список относительных путей к YAML');
-  }
-  if (new Set(layers).size !== layers.length) {
-    throw new Error('пути в layers должны быть уникальными');
+  validateYamlPaths(manifest.layers, 'layers');
+  return manifest;
+}
+
+export function validateBaseManifest(manifest) {
+  validateResourceManifest(manifest);
+  validateYamlPaths(manifest.maps, 'maps');
+  if (manifest.maps.some(path => !path.startsWith('maps/') || manifest.layers.includes(path))) {
+    throw new Error('карты должны находиться в папке maps/ и перечисляться только в поле maps');
   }
   return manifest;
 }

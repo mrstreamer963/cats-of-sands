@@ -1,12 +1,14 @@
 import init, { Session } from '../core/pkg/sand_simulation.js';
 import {
   addonCatalogPath, addonRoot, checkAddonId, orderAddons, resourceManifest,
-  validateAddonCatalog, validateAddonManifest, validateResourceManifest,
+  validateAddonCatalog, validateAddonManifest, validateBaseManifest,
 } from './addons.js';
 import './style.css';
 
+const dataRoot = 'data/';
 const storageKey = 'cats-of-sands.addons';
 const form = document.querySelector('#launch');
+const mapChoice = form.querySelector('#map');
 const choices = document.querySelector('#addons');
 const fields = form.querySelector('fieldset');
 const launch = form.querySelector('button');
@@ -24,6 +26,7 @@ function restoreSelection() {
 }
 
 let addonChoices = [];
+let base;
 
 async function loadJson(name, validate) {
   const { text } = await loadLayer(name);
@@ -53,9 +56,19 @@ async function loadAddons() {
   return addons;
 }
 
-async function showAddons() {
+async function showLaunchOptions() {
   try {
-    const addons = await loadAddons();
+    const [manifest, addons] = await Promise.all([
+      loadJson(dataRoot + resourceManifest, validateBaseManifest),
+      loadAddons(),
+    ]);
+    base = manifest;
+    for (const path of base.maps) {
+      const option = document.createElement('option');
+      option.value = path;
+      option.textContent = path.slice('maps/'.length).replace(/\.ya?ml$/i, '');
+      mapChoice.append(option);
+    }
     const selected = restoreSelection();
     addonChoices = addons.map(addon => {
       const label = document.createElement('label');
@@ -66,9 +79,10 @@ async function showAddons() {
       choices.append(label);
       return { addon, checkbox };
     });
+    mapChoice.disabled = false;
     launch.disabled = false;
   } catch (error) {
-    errorMessage.textContent = `Каталог аддонов: ${error.message}`;
+    errorMessage.textContent = error.message;
     errorMessage.hidden = false;
   }
 }
@@ -136,12 +150,16 @@ form.addEventListener('submit', async event => {
   if (launch.disabled) return;
 
   fields.disabled = true;
+  mapChoice.disabled = true;
   launch.disabled = true;
   errorMessage.hidden = true;
   try {
     const addons = orderAddons(selectedAddons());
-    const base = await loadJson('config/' + resourceManifest, validateResourceManifest);
-    const files = [...base.layers.map(path => 'config/' + path), ...addons.flatMap(addon => addon.layers)];
+    const files = [
+      ...base.layers.map(path => dataRoot + path),
+      dataRoot + mapChoice.value,
+      ...addons.flatMap(addon => addon.layers),
+    ];
     await init();
     const layers = await Promise.all(files.map(loadLayer));
     const next = new Session(layers);
@@ -157,8 +175,9 @@ form.addEventListener('submit', async event => {
     errorMessage.hidden = false;
   } finally {
     fields.disabled = false;
+    mapChoice.disabled = false;
     launch.disabled = false;
   }
 });
 
-showAddons();
+showLaunchOptions();

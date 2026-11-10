@@ -249,15 +249,18 @@ pub(crate) mod tests {
 
     pub(crate) fn shipped_scene() -> [Layer; 2] {
         [
-            layer("units.yaml", include_str!("../../public/config/units.yaml")),
-            layer("base.yaml", include_str!("../../public/config/base.yaml")),
+            layer("units.yaml", include_str!("../../public/data/units.yaml")),
+            layer(
+                "maps/map1.yaml",
+                include_str!("../../public/data/maps/map1.yaml"),
+            ),
         ]
     }
 
     pub(crate) fn shipped_addon() -> Layer {
         layer(
             "desert-companion/units.yaml",
-            include_str!("../../public/config/addons/desert-companion/units.yaml"),
+            include_str!("../../public/addons/desert-companion/units.yaml"),
         )
     }
 
