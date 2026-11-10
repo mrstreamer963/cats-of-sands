@@ -1,6 +1,8 @@
+mod components;
 mod config;
 
 use bevy_ecs::prelude::*;
+use components::{ClickColor, PreparedComponent, Speed, Sprite};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
@@ -8,20 +10,6 @@ use wasm_bindgen::prelude::*;
 const STEP: f64 = 1.0 / 60.0;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 const SCENE_WIDTH: f64 = 640.0;
-
-#[derive(Component)]
-struct Sprite {
-    x: f64,
-    y: f64,
-    radius: f64,
-    color: String,
-}
-
-#[derive(Component)]
-struct Speed(f64);
-
-#[derive(Component)]
-struct ClickColor(String);
 
 #[derive(EntityEvent)]
 struct Clicked {
@@ -104,25 +92,14 @@ impl Session {
 }
 
 impl Session {
-    fn from_config(config: BTreeMap<String, config::Components>) -> Self {
+    fn from_config(config: BTreeMap<String, Vec<PreparedComponent>>) -> Self {
         let mut world = World::new();
         world.add_observer(apply_click_color);
         let mut entities = BTreeMap::new();
         for (id, components) in config {
             let mut entity = world.spawn_empty();
-            if let Some(sprite) = components.sprite {
-                entity.insert(Sprite {
-                    x: sprite.position.x,
-                    y: sprite.position.y,
-                    radius: sprite.radius,
-                    color: sprite.color,
-                });
-            }
-            if let Some(speed) = components.speed {
-                entity.insert(Speed(speed.value));
-            }
-            if let Some(color) = components.click_color {
-                entity.insert(ClickColor(color.color));
+            for insert in components {
+                insert(&mut entity);
             }
             entities.insert(id, entity.id());
         }

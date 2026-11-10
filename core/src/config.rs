@@ -1,3 +1,4 @@
+use crate::components::{self, Position, PreparedComponent, Registry, Speed, Sprite};
 use serde::Deserialize;
 use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeMap;
@@ -21,45 +22,10 @@ pub struct EntityConfig {
     speed: Option<f64>,
     radius: Option<f64>,
     color: Option<String>,
-    components: Option<Components>,
+    components: Option<BTreeMap<String, Option<Value>>>,
 }
 
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "PascalCase")]
-pub struct Components {
-    pub sprite: Option<SpriteConfig>,
-    pub speed: Option<SpeedConfig>,
-    pub click_color: Option<ClickColorConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SpriteConfig {
-    pub position: Position,
-    pub radius: f64,
-    pub color: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SpeedConfig {
-    pub value: f64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClickColorConfig {
-    pub color: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Position {
-    pub x: f64,
-    pub y: f64,
-}
-
-pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Components>, String> {
+pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>, String> {
     let mut merged = Value::Mapping(Mapping::new());
     for (index, layer) in layers.iter().enumerate() {
         let mut document: Value = serde_yaml_ng::from_str(&layer.text)
@@ -75,18 +41,23 @@ pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Components>, String> {
 
     let config: Config = serde_path_to_error::deserialize(merged)
         .map_err(|error| format!("{}: {}", error.path(), error.inner()))?;
+    let registry = components::registry();
     config
         .entities
         .into_iter()
         .map(|(id, entity)| {
-            let components = entity.into_components(&id)?;
+            let components = entity.into_components(&id, &registry)?;
             Ok((id, components))
         })
         .collect()
 }
 
 impl EntityConfig {
-    fn into_components(self, id: &str) -> Result<Components, String> {
+    fn into_components(
+        self,
+        id: &str,
+        registry: &Registry,
+    ) -> Result<Vec<PreparedComponent>, String> {
         if id.trim().is_empty() {
             return Err("entities: ID сущности должен быть непустым".into());
         }
@@ -94,66 +65,40 @@ impl EntityConfig {
         let path = format!("entities.{id}");
         let missing = |field| format!("{path}.{field}: обязательное поле");
         let legacy = self.components.is_none();
-        let mut components = self.components.unwrap_or_default();
-        let mut sprite_path = format!("{path}.components.Sprite");
-        let mut speed_path = format!("{path}.components.Speed.value");
+        let explicit = self.components.unwrap_or_default();
+        let has = |name| explicit.get(name).is_some_and(Option::is_some);
+        let mut prepared = Vec::new();
 
-        if components.sprite.is_none()
+        if !has("Sprite")
             && (legacy || self.position.is_some() || self.radius.is_some() || self.color.is_some())
         {
-            sprite_path = path.clone();
-            components.sprite = Some(SpriteConfig {
-                position: self.position.ok_or_else(|| missing("position"))?,
-                radius: self.radius.ok_or_else(|| missing("radius"))?,
-                color: self.color.ok_or_else(|| missing("color"))?,
-            });
+            let sprite = Sprite::validated(
+                self.position.ok_or_else(|| missing("position"))?,
+                self.radius.ok_or_else(|| missing("radius"))?,
+                self.color.ok_or_else(|| missing("color"))?,
+                &path,
+            )?;
+            prepared.push(components::prepare(sprite));
         }
-        if components.speed.is_none() {
+        if !has("Speed") {
             if let Some(value) = self.speed {
-                speed_path = format!("{path}.speed");
-                components.speed = Some(SpeedConfig { value });
+                let speed = Speed::validated(value, &format!("{path}.speed"))?;
+                prepared.push(components::prepare(speed));
             } else if legacy {
                 return Err(missing("speed"));
             }
         }
-        if let Some(sprite) = &components.sprite {
-            finite(&format!("{sprite_path}.position.x"), sprite.position.x)?;
-            finite(&format!("{sprite_path}.position.y"), sprite.position.y)?;
-            finite(&format!("{sprite_path}.radius"), sprite.radius)?;
-            if sprite.radius <= 0.0 {
-                return Err(format!("{sprite_path}.radius: ожидается число больше нуля"));
+
+        for (name, value) in explicit {
+            let path = format!("{path}.components.{name}");
+            let loader = registry
+                .get(name.as_str())
+                .ok_or_else(|| format!("{path}: неизвестный компонент"))?;
+            if let Some(value) = value {
+                prepared.push(loader(value, &path)?);
             }
-            color(&format!("{sprite_path}.color"), &sprite.color)?;
         }
-        if let Some(speed) = &components.speed {
-            finite(&speed_path, speed.value)?;
-        }
-        if let Some(click_color) = &components.click_color {
-            color(
-                &format!("{path}.components.ClickColor.color"),
-                &click_color.color,
-            )?;
-        }
-        Ok(components)
-    }
-}
-
-fn finite(path: &str, value: f64) -> Result<(), String> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(format!("{path}: ожидается конечное число"))
-    }
-}
-
-fn color(path: &str, value: &str) -> Result<(), String> {
-    if value
-        .strip_prefix('#')
-        .is_some_and(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        Ok(())
-    } else {
-        Err(format!("{path}: ожидается цвет #RRGGBB"))
+        Ok(prepared)
     }
 }
 
@@ -198,11 +143,12 @@ pub(crate) mod tests {
         );
         let config = load(&[base(), addon]).unwrap();
         assert_eq!(config.len(), 2);
-        let cat = &config["cat"];
-        let sprite = cat.sprite.as_ref().unwrap();
-        assert_eq!(sprite.position.x, 80.0);
-        assert_eq!(sprite.position.y, 150.0);
-        assert_eq!(cat.speed.as_ref().unwrap().value, 150.0);
+        let session = crate::Session::from_config(config);
+        let cat = session.entities["cat"];
+        let sprite = session.world.get::<Sprite>(cat).unwrap();
+        assert_eq!(sprite.x, 80.0);
+        assert_eq!(sprite.y, 150.0);
+        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 150.0);
     }
 
     #[test]
@@ -246,14 +192,12 @@ pub(crate) mod tests {
             "entities: {cat: {components: {Sprite: {color: '#ff0000'}}}}",
         );
         let entities = load(&[scene, addon]).unwrap();
-        let cat = &entities["cat"];
-        let sprite = cat.sprite.as_ref().unwrap();
-        assert_eq!(
-            (sprite.position.x, sprite.position.y, sprite.radius),
-            (8.0, 15.0, 3.0)
-        );
+        let session = crate::Session::from_config(entities);
+        let cat = session.entities["cat"];
+        let sprite = session.world.get::<Sprite>(cat).unwrap();
+        assert_eq!((sprite.x, sprite.y, sprite.radius), (8.0, 15.0, 3.0));
         assert_eq!(sprite.color, "#ff0000");
-        assert!(cat.speed.is_none());
+        assert!(session.world.get::<Speed>(cat).is_none());
     }
 
     #[test]
@@ -272,5 +216,16 @@ pub(crate) mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn registered_speed_overrides_legacy_speed() {
+        let addon = layer(
+            "speed.yaml",
+            "entities: {cat: {speed: 90, components: {Speed: {value: 120}}}}",
+        );
+        let session = crate::Session::from_config(load(&[base(), addon]).unwrap());
+        let cat = session.entities["cat"];
+        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 120.0);
     }
 }
