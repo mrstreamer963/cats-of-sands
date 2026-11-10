@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde_yaml_ng::Value;
 use std::collections::HashMap;
 
-pub(crate) type PreparedComponent = Box<dyn FnOnce(&mut EntityWorldMut<'_>)>;
+pub(crate) type PreparedComponent = Box<dyn Fn(&mut EntityWorldMut<'_>)>;
 type Loader = fn(Value, &str) -> Result<PreparedComponent, String>;
 pub(crate) type Registry = HashMap<&'static str, Loader>;
 
@@ -23,9 +23,9 @@ pub(crate) fn registry() -> Registry {
     ])
 }
 
-pub(crate) fn prepare(component: impl Component) -> PreparedComponent {
+pub(crate) fn prepare(component: impl Component + Clone) -> PreparedComponent {
     Box::new(move |entity| {
-        entity.insert(component);
+        entity.insert(component.clone());
     })
 }
 
@@ -39,12 +39,9 @@ fn deserialize<T: DeserializeOwned>(value: Value, path: &str) -> Result<T, Strin
     })
 }
 
-fn finite(path: &str, value: f64) -> Result<(), String> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(format!("{path}: ожидается конечное число"))
-    }
+fn fixed(path: &str, value: f64) -> Result<crate::Fixed, String> {
+    crate::Fixed::try_from_f64(value)
+        .ok_or_else(|| format!("{path}: ожидается конечное число в диапазоне Q32.32"))
 }
 
 fn validate_color(path: &str, value: &str) -> Result<(), String> {

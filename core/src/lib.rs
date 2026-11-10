@@ -2,8 +2,14 @@
 
 mod components;
 mod config;
+mod fixed;
 mod observers;
+mod sim_id;
 mod systems;
+
+pub use config::Layer;
+pub use fixed::Fixed;
+pub use sim_id::SimId;
 
 use bevy_ecs::prelude::*;
 use components::{PreparedComponent, Sprite};
@@ -13,102 +19,231 @@ use std::collections::BTreeMap;
 use systems::move_sprites;
 use wasm_bindgen::prelude::*;
 
-const STEP: f64 = 1.0 / 60.0;
+const TICKS_PER_SECOND: i64 = 60;
+const STEP: f64 = 1.0 / TICKS_PER_SECOND as f64;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 
 #[derive(Serialize)]
-struct SpriteSnapshot<'a> {
-    id: &'a str,
-    x: f64,
-    y: f64,
-    radius: f64,
-    color: &'a str,
+pub struct SpriteSnapshot<'a> {
+    pub id: SimId,
+    #[serde(rename = "type")]
+    pub type_name: &'a str,
+    pub x: f64,
+    pub y: f64,
+    pub radius: f64,
+    pub color: &'a str,
 }
 
-#[wasm_bindgen]
-/// Игровая сессия с собственным миром Bevy и фиксированным шагом симуляции.
-pub struct Session {
+pub enum Command {
+    Click { id: SimId },
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct SimEvent {
+    pub tick: u64,
+    pub id: SimId,
+    pub color: String,
+}
+
+#[derive(Default, Resource)]
+struct SimEvents(Vec<SimEvent>);
+
+/// ECS world with an explicit clock. Tick 0 is the first tick to execute.
+pub struct Simulation {
     world: World,
-    entities: BTreeMap<String, Entity>,
+    entities: BTreeMap<SimId, (Entity, String)>,
+    types: BTreeMap<String, Vec<PreparedComponent>>,
+    last_id: u32,
     schedule: Schedule,
+    tick: u64,
+    commands: BTreeMap<u64, Vec<Command>>,
+}
+
+impl Simulation {
+    pub fn from_layers(layers: &[Layer]) -> Result<Self, String> {
+        config::load(layers).map(Self::from_config)
+    }
+
+    fn from_config(config: BTreeMap<String, Vec<PreparedComponent>>) -> Self {
+        let mut world = World::new();
+        world.init_resource::<SimEvents>();
+        world.add_observer(apply_click_color);
+        let mut schedule = Schedule::default();
+        schedule.add_systems(move_sprites);
+        let initial_types: Vec<_> = config.keys().cloned().collect();
+        let mut simulation = Self {
+            world,
+            entities: BTreeMap::new(),
+            types: config,
+            last_id: 0,
+            schedule,
+            tick: 0,
+            commands: BTreeMap::new(),
+        };
+        for type_name in initial_types {
+            simulation
+                .spawn(&type_name)
+                .expect("initial type must be spawnable");
+        }
+        simulation
+    }
+
+    /// Creates an independent instance from a YAML type.
+    pub fn spawn(&mut self, type_name: &str) -> Result<SimId, String> {
+        let components = self
+            .types
+            .get(type_name)
+            .ok_or_else(|| format!("Неизвестный тип: {type_name}"))?;
+        let next = self
+            .last_id
+            .checked_add(1)
+            .ok_or_else(|| "Закончились идентификаторы сущностей".to_owned())?;
+        let id = SimId(next);
+        let mut entity = self.world.spawn_empty();
+        for insert in components {
+            insert(&mut entity);
+        }
+        self.entities
+            .insert(id, (entity.id(), type_name.to_owned()));
+        self.last_id = next;
+        Ok(id)
+    }
+
+    /// Removes the instance. Its ID is never assigned again.
+    pub fn despawn(&mut self, id: SimId) -> bool {
+        self.entities
+            .remove(&id)
+            .is_some_and(|(entity, _)| self.world.despawn(entity))
+    }
+
+    /// Tick that will execute next.
+    pub fn current_tick(&self) -> u64 {
+        self.tick
+    }
+
+    /// Commands for the same tick execute in submission order.
+    pub fn submit_command(&mut self, tick: u64, command: Command) -> Result<(), String> {
+        if tick < self.tick {
+            return Err(format!("Тик {tick} уже выполнен"));
+        }
+        self.commands.entry(tick).or_default().push(command);
+        Ok(())
+    }
+
+    pub fn step(&mut self, ticks: u32) {
+        for _ in 0..ticks {
+            let next_tick = self.tick.checked_add(1).expect("simulation tick overflow");
+            for command in self.commands.remove(&self.tick).into_iter().flatten() {
+                match command {
+                    Command::Click { id } => {
+                        if let Some(&(entity, _)) = self.entities.get(&id) {
+                            self.world.trigger(Clicked {
+                                entity,
+                                id,
+                                tick: self.tick,
+                            });
+                        }
+                    }
+                }
+            }
+            self.schedule.run(&mut self.world);
+            self.tick = next_tick;
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<SpriteSnapshot<'_>> {
+        self.entities
+            .iter()
+            .filter_map(|(&id, (entity, type_name))| {
+                let sprite = self.world.get::<Sprite>(*entity)?;
+                Some(SpriteSnapshot {
+                    id,
+                    type_name,
+                    x: sprite.x.to_f64(),
+                    y: sprite.y.to_f64(),
+                    radius: sprite.radius.to_f64(),
+                    color: &sprite.color,
+                })
+            })
+            .collect()
+    }
+
+    pub fn drain_events(&mut self) -> Vec<SimEvent> {
+        std::mem::take(&mut self.world.resource_mut::<SimEvents>().0)
+    }
+}
+
+/// Browser adapter with a fixed-step frame accumulator.
+#[wasm_bindgen]
+pub struct Session {
+    simulation: Simulation,
     accumulator: f64,
 }
 
 #[wasm_bindgen]
 impl Session {
-    /// Загружает упорядоченные YAML-слои в виде массива объектов с полями `name` и `text`.
-    ///
-    /// Возвращает ошибку загрузки или проверки конфигурации, если сессию создать нельзя.
     #[wasm_bindgen(constructor)]
     pub fn new(layers: JsValue) -> Result<Session, JsError> {
-        let layers: Vec<config::Layer> = serde_wasm_bindgen::from_value(layers)?;
-        let config = config::load(&layers).map_err(|error| JsError::new(&error))?;
-        Ok(Self::from_config(config))
+        let layers: Vec<Layer> = serde_wasm_bindgen::from_value(layers)?;
+        let simulation = Simulation::from_layers(&layers).map_err(|error| JsError::new(&error))?;
+        Ok(Self {
+            simulation,
+            accumulator: 0.0,
+        })
     }
 
-    /// Накапливает прошедшее время в секундах и выполняет доступные шаги симуляции.
-    ///
-    /// Принимает до 0,25 секунды за вызов. Неположительные и неконечные значения пропускаются.
+    /// Accepts up to 0.25 seconds per call.
     pub fn advance(&mut self, seconds: f64) {
         if !seconds.is_finite() || seconds <= 0.0 {
             return;
         }
-
         self.accumulator += seconds.min(MAX_FRAME_SECONDS);
         while self.accumulator + f64::EPSILON >= STEP {
-            self.schedule.run(&mut self.world);
+            self.step(1);
             self.accumulator = (self.accumulator - STEP).max(0.0);
         }
     }
 
-    /// Возвращает массив объектов с полями `id`, `x`, `y`, `radius` и `color`.
-    pub fn snapshot(&mut self) -> Result<JsValue, JsError> {
-        let sprites: Vec<_> = self
-            .entities
-            .iter()
-            .filter_map(|(id, &entity)| {
-                let sprite = self.world.get::<Sprite>(entity)?;
-                Some(SpriteSnapshot {
-                    id,
-                    x: sprite.x,
-                    y: sprite.y,
-                    radius: sprite.radius,
-                    color: &sprite.color,
-                })
-            })
-            .collect();
-        Ok(serde_wasm_bindgen::to_value(&sprites)?)
+    pub fn current_tick(&self) -> u64 {
+        self.simulation.current_tick()
     }
 
-    /// Отправляет событие клика сущности по её ID. Неизвестный ID пропускается.
-    pub fn click(&mut self, id: &str) {
-        if let Some(&entity) = self.entities.get(id) {
-            self.world.trigger(Clicked { entity });
-        }
+    pub fn step(&mut self, ticks: u32) {
+        self.simulation.step(ticks);
     }
-}
 
-impl Session {
-    fn from_config(config: BTreeMap<String, Vec<PreparedComponent>>) -> Self {
-        let mut world = World::new();
-        world.add_observer(apply_click_color);
-        let mut entities = BTreeMap::new();
-        for (id, components) in config {
-            let mut entity = world.spawn_empty();
-            for insert in components {
-                insert(&mut entity);
-            }
-            entities.insert(id, entity.id());
-        }
+    pub fn snapshot(&self) -> Result<JsValue, JsError> {
+        Ok(serde_wasm_bindgen::to_value(&self.simulation.snapshot())?)
+    }
 
-        let mut schedule = Schedule::default();
-        schedule.add_systems(move_sprites);
-        Self {
-            world,
-            entities,
-            schedule,
-            accumulator: 0.0,
-        }
+    /// Queues a click for the next tick to execute. Unknown IDs are ignored.
+    pub fn click(&mut self, id: u32) {
+        let tick = self.simulation.current_tick();
+        self.submit_click(tick, id)
+            .expect("the next tick accepts commands");
+    }
+
+    pub fn submit_click(&mut self, tick: u64, id: u32) -> Result<(), JsError> {
+        self.simulation
+            .submit_command(tick, Command::Click { id: SimId(id) })
+            .map_err(|error| JsError::new(&error))
+    }
+
+    pub fn spawn(&mut self, type_name: &str) -> Result<u32, JsError> {
+        self.simulation
+            .spawn(type_name)
+            .map(|id| id.0)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    pub fn despawn(&mut self, id: u32) -> bool {
+        self.simulation.despawn(SimId(id))
+    }
+
+    pub fn drain_events(&mut self) -> Result<JsValue, JsError> {
+        let serializer =
+            serde_wasm_bindgen::Serializer::new().serialize_large_number_types_as_bigints(true);
+        Ok(self.simulation.drain_events().serialize(&serializer)?)
     }
 }
 
@@ -119,10 +254,14 @@ mod tests {
 
     #[test]
     fn equal_steps_give_equal_positions_across_frame_rates() {
-        let mut one_step_per_frame =
-            Session::from_config(config::load(&[config::tests::base()]).unwrap());
-        let mut two_steps_per_frame =
-            Session::from_config(config::load(&[config::tests::base()]).unwrap());
+        let mut one_step_per_frame = Session {
+            simulation: Simulation::from_layers(&[config::tests::base()]).unwrap(),
+            accumulator: 0.0,
+        };
+        let mut two_steps_per_frame = Session {
+            simulation: Simulation::from_layers(&[config::tests::base()]).unwrap(),
+            accumulator: 0.0,
+        };
 
         for _ in 0..60 {
             one_step_per_frame.advance(STEP);
@@ -131,9 +270,65 @@ mod tests {
             two_steps_per_frame.advance(2.0 * STEP);
         }
         for session in [&mut one_step_per_frame, &mut two_steps_per_frame] {
-            let mut query = session.world.query::<&Sprite>();
-            assert_eq!(query.single(&session.world).unwrap().x, 140.0);
+            let mut query = session.simulation.world.query::<&Sprite>();
+            assert_eq!(
+                query.single(&session.simulation.world).unwrap().x,
+                Fixed::from_int(140)
+            );
         }
+    }
+
+    #[test]
+    fn instances_of_one_type_have_independent_ids_and_state() {
+        let addon = config::tests::layer(
+            "desert-companion.yaml",
+            include_str!("../../public/config/addons/desert-companion.yaml"),
+        );
+        let mut simulation = Simulation::from_layers(&[config::tests::base(), addon]).unwrap();
+        let first = simulation.spawn("companion").unwrap();
+        let second = simulation.spawn("companion").unwrap();
+        assert_ne!(first, second);
+        simulation
+            .submit_command(0, Command::Click { id: first })
+            .unwrap();
+        simulation.step(1);
+
+        let snapshot = simulation.snapshot();
+        let first_view = snapshot.iter().find(|sprite| sprite.id == first).unwrap();
+        let second_view = snapshot.iter().find(|sprite| sprite.id == second).unwrap();
+        assert_eq!(first_view.type_name, second_view.type_name);
+        assert_eq!(first_view.color, "#f1a2ca");
+        assert_eq!(second_view.color, "#80d8c4");
+        assert_eq!(simulation.drain_events()[0].id, first);
+
+        simulation
+            .submit_command(1, Command::Click { id: second })
+            .unwrap();
+        assert!(simulation.despawn(second));
+        let replacement = simulation.spawn("companion").unwrap();
+        assert!(replacement > second);
+        simulation.step(1);
+        assert!(simulation.drain_events().is_empty());
+        assert_eq!(
+            simulation
+                .snapshot()
+                .iter()
+                .find(|sprite| sprite.id == replacement)
+                .unwrap()
+                .color,
+            "#80d8c4",
+        );
+    }
+
+    #[test]
+    fn fractional_negative_speed_wraps_with_integer_arithmetic() {
+        let scene = config::tests::layer(
+            "fractional.yaml",
+            "entities: {cat: {position: {x: 0.25, y: 0}, radius: 1, color: '#ffffff', speed: -22.5}}",
+        );
+        let mut simulation = Simulation::from_layers(&[scene]).unwrap();
+        simulation.step(1);
+        assert_eq!(simulation.snapshot()[0].x, 639.875);
     }
 
     #[test]
@@ -142,20 +337,42 @@ mod tests {
             "desert-companion.yaml",
             include_str!("../../public/config/addons/desert-companion.yaml"),
         );
-        let mut session =
-            Session::from_config(config::load(&[config::tests::base(), addon]).unwrap());
-        let cat = session.entities["cat"];
-        let companion = session.entities["companion"];
+        let mut session = Simulation::from_layers(&[config::tests::base(), addon]).unwrap();
+        let cat = session.entities[&SimId(1)].0;
+        let companion = session.entities[&SimId(2)].0;
         session
             .world
             .entity_mut(cat)
             .insert(ClickColor("#00ff00".into()));
 
-        session.click("companion");
-        session.advance(STEP);
+        session
+            .submit_command(1, Command::Click { id: SimId(2) })
+            .unwrap();
+        session.step(1);
+        assert!(session.drain_events().is_empty());
+        assert_eq!(
+            session.world.get::<Sprite>(companion).unwrap().color,
+            "#80d8c4"
+        );
+        session.step(1);
+        assert_eq!(session.current_tick(), 2);
+        assert_eq!(
+            session.drain_events(),
+            vec![SimEvent {
+                tick: 1,
+                id: SimId(2),
+                color: "#f1a2ca".into(),
+            }]
+        );
+        assert!(session.drain_events().is_empty());
+        assert!(
+            session
+                .submit_command(1, Command::Click { id: SimId(2) })
+                .is_err()
+        );
         assert_eq!(session.world.get::<Sprite>(cat).unwrap().color, "#f9c86d");
         let companion = session.world.get::<Sprite>(companion).unwrap();
         assert_eq!(companion.color, "#f1a2ca");
-        assert_eq!(companion.x, 41.5);
+        assert_eq!(companion.x, Fixed::from_int(43));
     }
 }

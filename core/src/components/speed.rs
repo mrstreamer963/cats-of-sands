@@ -1,10 +1,11 @@
-use super::{PreparedComponent, deserialize, finite, prepare};
+use super::{PreparedComponent, deserialize, fixed, prepare};
+use crate::Fixed;
 use bevy_ecs::prelude::Component;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
 
-#[derive(Component)]
-pub(crate) struct Speed(pub f64);
+#[derive(Clone, Component)]
+pub(crate) struct Speed(pub Fixed);
 
 impl Speed {
     pub(super) fn load(value: Value, path: &str) -> Result<PreparedComponent, String> {
@@ -19,7 +20,6 @@ impl Speed {
     }
 
     pub(crate) fn validated(value: f64, path: &str) -> Result<Self, String> {
-        finite(path, value)?;
-        Ok(Self(value))
+        fixed(path, value).map(Self)
     }
 }

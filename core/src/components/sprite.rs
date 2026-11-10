@@ -1,4 +1,5 @@
-use super::{PreparedComponent, deserialize, finite, prepare, validate_color};
+use super::{PreparedComponent, deserialize, fixed, prepare, validate_color};
+use crate::Fixed;
 use bevy_ecs::prelude::Component;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
@@ -10,11 +11,11 @@ pub(crate) struct Position {
     y: f64,
 }
 
-#[derive(Component)]
+#[derive(Clone, Component)]
 pub(crate) struct Sprite {
-    pub x: f64,
-    pub y: f64,
-    pub radius: f64,
+    pub x: Fixed,
+    pub y: Fixed,
+    pub radius: Fixed,
     pub color: String,
 }
 
@@ -38,16 +39,16 @@ impl Sprite {
         color: String,
         path: &str,
     ) -> Result<Self, String> {
-        finite(&format!("{path}.position.x"), position.x)?;
-        finite(&format!("{path}.position.y"), position.y)?;
-        finite(&format!("{path}.radius"), radius)?;
-        if radius <= 0.0 {
+        let x = fixed(&format!("{path}.position.x"), position.x)?;
+        let y = fixed(&format!("{path}.position.y"), position.y)?;
+        let radius = fixed(&format!("{path}.radius"), radius)?;
+        if radius.raw() <= 0 {
             return Err(format!("{path}.radius: ожидается число больше нуля"));
         }
         validate_color(&format!("{path}.color"), &color)?;
         Ok(Self {
-            x: position.x,
-            y: position.y,
+            x,
+            y,
             radius,
             color,
         })

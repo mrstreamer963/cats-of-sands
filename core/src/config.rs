@@ -214,6 +214,7 @@ fn merge(base: &mut Value, overlay: Value) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::{Fixed, SimId};
 
     pub(crate) fn base() -> Layer {
         Layer {
@@ -237,12 +238,15 @@ pub(crate) mod tests {
         );
         let config = load(&[base(), addon]).unwrap();
         assert_eq!(config.len(), 2);
-        let session = crate::Session::from_config(config);
-        let cat = session.entities["cat"];
+        let session = crate::Simulation::from_config(config);
+        let cat = session.entities[&SimId(1)].0;
         let sprite = session.world.get::<Sprite>(cat).unwrap();
-        assert_eq!(sprite.x, 80.0);
-        assert_eq!(sprite.y, 150.0);
-        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 150.0);
+        assert_eq!(sprite.x, Fixed::from_int(80));
+        assert_eq!(sprite.y, Fixed::from_int(150));
+        assert_eq!(
+            session.world.get::<Speed>(cat).unwrap().0,
+            Fixed::from_int(150)
+        );
     }
 
     #[test]
@@ -286,10 +290,13 @@ pub(crate) mod tests {
             "entities: [{override: cat, components: [{type: Sprite, color: '#ff0000'}]}]",
         );
         let entities = load(&[scene, addon]).unwrap();
-        let session = crate::Session::from_config(entities);
-        let cat = session.entities["cat"];
+        let session = crate::Simulation::from_config(entities);
+        let cat = session.entities[&SimId(1)].0;
         let sprite = session.world.get::<Sprite>(cat).unwrap();
-        assert_eq!((sprite.x, sprite.y, sprite.radius), (8.0, 15.0, 3.0));
+        assert_eq!(
+            (sprite.x, sprite.y, sprite.radius),
+            (Fixed::from_int(8), Fixed::from_int(15), Fixed::from_int(3))
+        );
         assert_eq!(sprite.color, "#ff0000");
         assert!(session.world.get::<Speed>(cat).is_none());
     }
@@ -318,9 +325,12 @@ pub(crate) mod tests {
             "speed.yaml",
             "entities: {cat: {speed: 90, components: {Speed: {value: 120}}}}",
         );
-        let session = crate::Session::from_config(load(&[base(), addon]).unwrap());
-        let cat = session.entities["cat"];
-        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 120.0);
+        let session = crate::Simulation::from_config(load(&[base(), addon]).unwrap());
+        let cat = session.entities[&SimId(1)].0;
+        assert_eq!(
+            session.world.get::<Speed>(cat).unwrap().0,
+            Fixed::from_int(120)
+        );
     }
 
     #[test]
@@ -338,10 +348,13 @@ pub(crate) mod tests {
         );
         let config = load(&[base(), addon]).unwrap();
         assert_eq!(config.len(), 1);
-        let session = crate::Session::from_config(config);
-        let cat = session.entities["cat"];
+        let session = crate::Simulation::from_config(config);
+        let cat = session.entities[&SimId(1)].0;
         assert!(session.world.get::<Sprite>(cat).is_none());
-        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 120.0);
+        assert_eq!(
+            session.world.get::<Speed>(cat).unwrap().0,
+            Fixed::from_int(120)
+        );
     }
 
     #[test]

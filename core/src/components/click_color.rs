@@ -3,7 +3,7 @@ use bevy_ecs::prelude::Component;
 use serde::Deserialize;
 use serde_yaml_ng::Value;
 
-#[derive(Component)]
+#[derive(Clone, Component)]
 pub(crate) struct ClickColor(pub String);
 
 impl ClickColor {

@@ -1,4 +1,5 @@
 import init, { Session } from '../core/pkg/sand_simulation.js';
+import { orderAddons } from './addons.js';
 import './style.css';
 
 const storageKey = 'cats-of-sands.addons';
@@ -88,6 +89,7 @@ canvas.addEventListener('click', event => {
 function draw(time) {
   if (previousTime !== undefined) {
     session.advance((time - previousTime) / 1000);
+    session.drain_events();
   }
   previousTime = time;
 
@@ -106,11 +108,12 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
   if (launch.disabled) return;
 
-  const files = ['config/base.yaml', ...selectedAddons().map(addon => addon.path)];
   fields.disabled = true;
   launch.disabled = true;
   errorMessage.hidden = true;
   try {
+    const addons = orderAddons(selectedAddons());
+    const files = ['config/base.yaml', ...addons.map(addon => addon.path)];
     await init();
     const layers = await Promise.all(files.map(loadLayer));
     const next = new Session(layers);
