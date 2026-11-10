@@ -11,15 +11,30 @@ pub struct Layer {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
-    pub entities: BTreeMap<String, EntityConfig>,
+struct Config {
+    entities: Option<BTreeMap<String, EntityConfig>>,
+    units: Option<BTreeMap<String, EntityConfig>>,
+    placements: Option<Vec<Placement>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Placement {
+    #[serde(rename = "type")]
+    type_name: String,
+    position: Value,
+}
+
+pub(crate) struct LoadedConfig {
+    pub types: BTreeMap<String, Vec<PreparedComponent>>,
+    pub placements: Vec<(String, Option<PreparedComponent>)>,
 }
 
 #[derive(Deserialize)]
 #[serde(transparent)]
 pub struct EntityConfig(BTreeMap<String, Option<Value>>);
 
-pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>, String> {
+pub fn load(layers: &[Layer]) -> Result<LoadedConfig, String> {
     let mut merged = Value::Mapping(Mapping::new());
     for (index, layer) in layers.iter().enumerate() {
         let mut document: Value = serde_yaml_ng::from_str(&layer.text)
@@ -30,47 +45,99 @@ pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>
         if index > 0 {
             mapping.remove("addon");
         }
-        if let Some(entities @ Value::Sequence(_)) = mapping.get_mut("entities") {
-            let Value::Sequence(entries) = std::mem::take(entities) else {
-                unreachable!();
-            };
-            let mut rules = merged
+        for section in ["entities", "units"] {
+            if let Some(value) = mapping.get_mut(section) {
+                merge_type_section(&mut merged, section, value)
+                    .map_err(|error| format!("{}: {error}", layer.name))?;
+            }
+        }
+        if let Some(placements) = mapping.get_mut("placements") {
+            let entries = placements
+                .as_sequence_mut()
+                .ok_or_else(|| format!("{}: placements: ожидается список", layer.name))?;
+            let previous = merged
                 .as_mapping_mut()
                 .unwrap()
-                .remove("entities")
-                .unwrap_or_else(|| Value::Mapping(Mapping::new()));
-            let rules_map = rules
-                .as_mapping_mut()
-                .ok_or_else(|| format!("{}: entities: ожидается словарь сущностей", layer.name))?;
-            apply_entity_rules(rules_map, entries)
-                .map_err(|error| format!("{}: {error}", layer.name))?;
-            *entities = rules;
-        } else if let Some(Value::Mapping(entities)) = mapping.get_mut("entities") {
-            for (_, entity) in entities {
-                if let Value::Mapping(entity) = entity {
-                    normalize_speed(entity);
-                }
-            }
+                .entry("placements".into())
+                .or_insert_with(|| Value::Sequence(Vec::new()));
+            previous.as_sequence_mut().unwrap().append(entries);
+            *placements = std::mem::take(previous);
         }
         merge(&mut merged, document);
     }
 
     let config: Config = serde_path_to_error::deserialize(merged)
         .map_err(|error| format!("{}: {}", error.path(), error.inner()))?;
+    let (section, definitions) = match (config.entities, config.units) {
+        (Some(entities), None) if config.placements.is_none() => ("entities", entities),
+        (None, Some(units)) => ("units", units),
+        (None, None) if config.placements.is_some() => ("units", BTreeMap::new()),
+        (None, None) => return Err("Ожидается каталог units или описание entities".into()),
+        _ => return Err("Используйте entities отдельно от units и placements".into()),
+    };
     let registry = components::registry();
-    config
-        .entities
+    let types = definitions
         .into_iter()
         .map(|(id, entity)| {
-            let components = entity.into_components(&id, &registry)?;
+            let components = entity.into_components(section, &id, &registry)?;
             Ok((id, components))
         })
-        .collect()
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let placements = if section == "entities" {
+        types.keys().map(|name| (name.clone(), None)).collect()
+    } else {
+        config
+            .placements
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, placement)| {
+                let name = placement.type_name;
+                if !types.contains_key(&name) {
+                    return Err(format!("placements[{index}].type: неизвестный тип {name}"));
+                }
+                let path = format!("placements[{index}].position");
+                let position = registry["Position"](placement.position, &path)?;
+                Ok((name, Some(position)))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+    Ok(LoadedConfig { types, placements })
 }
 
-fn apply_entity_rules(entities: &mut Mapping, entries: Vec<Value>) -> Result<(), String> {
+fn merge_type_section(merged: &mut Value, section: &str, value: &mut Value) -> Result<(), String> {
+    match value {
+        Value::Sequence(entries) => {
+            let mut rules = merged
+                .as_mapping_mut()
+                .unwrap()
+                .remove(section)
+                .unwrap_or_else(|| Value::Mapping(Mapping::new()));
+            let rules_map = rules
+                .as_mapping_mut()
+                .ok_or_else(|| format!("{section}: ожидается словарь типов"))?;
+            apply_entity_rules(section, rules_map, std::mem::take(entries))?;
+            *value = rules;
+        }
+        Value::Mapping(entities) => {
+            for (_, entity) in entities {
+                if let Value::Mapping(entity) = entity {
+                    normalize_speed(entity);
+                }
+            }
+        }
+        _ => return Err(format!("{section}: ожидается словарь или список типов")),
+    }
+    Ok(())
+}
+
+fn apply_entity_rules(
+    section: &str,
+    entities: &mut Mapping,
+    entries: Vec<Value>,
+) -> Result<(), String> {
     for (index, entry) in entries.into_iter().enumerate() {
-        let path = format!("entities[{index}]");
+        let path = format!("{section}[{index}]");
         let Value::Mapping(mut entry) = entry else {
             return Err(format!("{path}: ожидается объект"));
         };
@@ -124,14 +191,15 @@ fn normalize_speed(entity: &mut Mapping) {
 impl EntityConfig {
     fn into_components(
         self,
+        section: &str,
         id: &str,
         registry: &Registry,
     ) -> Result<Vec<PreparedComponent>, String> {
         if id.trim().is_empty() {
-            return Err("entities: ID сущности должен быть непустым".into());
+            return Err(format!("{section}: ID сущности должен быть непустым"));
         }
 
-        let path = format!("entities.{id}");
+        let path = format!("{section}.{id}");
         let mut prepared = Vec::new();
         for (name, value) in self.0 {
             if name == "components" {
@@ -172,11 +240,25 @@ pub(crate) mod tests {
     use crate::components::{Position, Speed, Sprite};
     use crate::{Fixed, SimId};
 
-    pub(crate) fn base() -> Layer {
-        Layer {
-            name: "base.yaml".into(),
-            text: include_str!("../../public/config/base.yaml").into(),
-        }
+    fn base() -> Layer {
+        layer(
+            "legacy.yaml",
+            "entities: {cat: {Position: {x: 80, y: 150}, Sprite: {radius: 18, color: '#f9c86d'}, Speed: 60}}",
+        )
+    }
+
+    pub(crate) fn shipped_scene() -> [Layer; 2] {
+        [
+            layer("units.yaml", include_str!("../../public/config/units.yaml")),
+            layer("base.yaml", include_str!("../../public/config/base.yaml")),
+        ]
+    }
+
+    pub(crate) fn shipped_addon() -> Layer {
+        layer(
+            "desert-companion.yaml",
+            include_str!("../../public/config/addons/desert-companion.yaml"),
+        )
     }
 
     pub(crate) fn layer(name: &str, text: &str) -> Layer {
@@ -188,12 +270,9 @@ pub(crate) mod tests {
 
     #[test]
     fn shipped_addon_overrides_speed_and_keeps_position() {
-        let addon = layer(
-            "desert-companion.yaml",
-            include_str!("../../public/config/addons/desert-companion.yaml"),
-        );
-        let config = load(&[base(), addon]).unwrap();
-        assert_eq!(config.len(), 2);
+        let [units, scene] = shipped_scene();
+        let config = load(&[units, scene, shipped_addon()]).unwrap();
+        assert_eq!(config.types.len(), 2);
         let session = crate::Simulation::from_config(config);
         let cat = session.entities[&SimId(1)].0;
         let position = session.world.get::<Position>(cat).unwrap();
@@ -203,6 +282,38 @@ pub(crate) mod tests {
             session.world.get::<Speed>(cat).unwrap().0,
             Fixed::from_int(150)
         );
+    }
+
+    #[test]
+    fn placements_create_independent_instances_and_leave_unused_types_available() {
+        let [units, scene] = shipped_scene();
+        let extra = layer(
+            "extra.yaml",
+            "units: [{type: UNUSED}]\nplacements: [{type: CAT, position: {x: 240, y: 180}}]",
+        );
+        let mut simulation = crate::Simulation::from_layers(&[units, scene, extra]).unwrap();
+        let snapshot = simulation.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        for (entry, (id, x, y)) in snapshot.iter().zip([(1, 80, 150), (2, 240, 180)]) {
+            assert_eq!(entry.id, SimId(id));
+            assert_eq!(entry.type_name, "CAT");
+            let position = entry.position.as_ref().unwrap();
+            assert_eq!(position.x, Fixed::from_int(x));
+            assert_eq!(position.y, Fixed::from_int(y));
+            assert_eq!(entry.sprite.as_ref().unwrap().color, "#f9c86d");
+        }
+        assert_eq!(simulation.spawn("UNUSED").unwrap(), SimId(3));
+    }
+
+    #[test]
+    fn placement_with_unknown_type_reports_its_index() {
+        let [units, scene] = shipped_scene();
+        let extra = layer(
+            "extra.yaml",
+            "placements: [{type: cat, position: {x: 0, y: 0}}]",
+        );
+        let error = load(&[units, scene, extra]).err().unwrap();
+        assert_eq!(error, "placements[1].type: неизвестный тип cat");
     }
 
     #[test]
@@ -328,7 +439,7 @@ pub(crate) mod tests {
             );
         }
         let config = load(&[layer("empty.yaml", "entities: {cat: {}}")]).unwrap();
-        assert!(config["cat"].is_empty());
+        assert!(config.types["cat"].is_empty());
     }
 
     #[test]
@@ -345,7 +456,7 @@ pub(crate) mod tests {
       value: 120",
         );
         let config = load(&[base(), addon]).unwrap();
-        assert_eq!(config.len(), 1);
+        assert_eq!(config.types.len(), 1);
         let session = crate::Simulation::from_config(config);
         let cat = session.entities[&SimId(1)].0;
         let snapshot = session.snapshot();

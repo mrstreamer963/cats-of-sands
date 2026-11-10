@@ -1,0 +1,4 @@
+units:
+  - type: CAT
+    Sprite: { radius: 18, color: "#f9c86d" }
+    Speed: 60

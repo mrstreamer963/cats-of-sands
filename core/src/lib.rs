@@ -65,25 +65,24 @@ impl Simulation {
         config::load(layers).map(Self::from_config)
     }
 
-    fn from_config(config: BTreeMap<String, Vec<PreparedComponent>>) -> Self {
+    fn from_config(config: config::LoadedConfig) -> Self {
         let mut world = World::new();
         world.init_resource::<SimEvents>();
         world.add_observer(apply_click_color);
         let mut schedule = Schedule::default();
         schedule.add_systems(move_entities);
-        let initial_types: Vec<_> = config.keys().cloned().collect();
         let mut simulation = Self {
             world,
             entities: BTreeMap::new(),
-            types: config,
+            types: config.types,
             last_id: 0,
             schedule,
             tick: 0,
             commands: BTreeMap::new(),
         };
-        for type_name in initial_types {
+        for (type_name, position) in config.placements {
             simulation
-                .spawn(&type_name)
+                .spawn_with_position(&type_name, position.as_ref())
                 .expect("initial type must be spawnable");
         }
         simulation
@@ -91,6 +90,14 @@ impl Simulation {
 
     /// Creates an independent instance from a YAML type.
     pub fn spawn(&mut self, type_name: &str) -> Result<SimId, String> {
+        self.spawn_with_position(type_name, None)
+    }
+
+    fn spawn_with_position(
+        &mut self,
+        type_name: &str,
+        position: Option<&PreparedComponent>,
+    ) -> Result<SimId, String> {
         let components = self
             .types
             .get(type_name)
@@ -102,6 +109,9 @@ impl Simulation {
         let id = SimId(next);
         let mut entity = self.world.spawn_empty();
         for insert in components {
+            insert(&mut entity);
+        }
+        if let Some(insert) = position {
             insert(&mut entity);
         }
         self.entities
@@ -251,11 +261,11 @@ mod tests {
     #[test]
     fn equal_steps_give_equal_positions_across_frame_rates() {
         let mut one_step_per_frame = Session {
-            simulation: Simulation::from_layers(&[config::tests::base()]).unwrap(),
+            simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
         };
         let mut two_steps_per_frame = Session {
-            simulation: Simulation::from_layers(&[config::tests::base()]).unwrap(),
+            simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
         };
 
@@ -276,13 +286,11 @@ mod tests {
 
     #[test]
     fn instances_of_one_type_have_independent_ids_and_state() {
-        let addon = config::tests::layer(
-            "desert-companion.yaml",
-            include_str!("../../public/config/addons/desert-companion.yaml"),
-        );
-        let mut simulation = Simulation::from_layers(&[config::tests::base(), addon]).unwrap();
-        let first = simulation.spawn("companion").unwrap();
-        let second = simulation.spawn("companion").unwrap();
+        let [units, scene] = config::tests::shipped_scene();
+        let addon = config::tests::shipped_addon();
+        let mut simulation = Simulation::from_layers(&[units, scene, addon]).unwrap();
+        let first = simulation.spawn("COMPANION").unwrap();
+        let second = simulation.spawn("COMPANION").unwrap();
         assert_ne!(first, second);
         simulation
             .submit_command(0, Command::Click { id: first })
@@ -301,7 +309,7 @@ mod tests {
             .submit_command(1, Command::Click { id: second })
             .unwrap();
         assert!(simulation.despawn(second));
-        let replacement = simulation.spawn("companion").unwrap();
+        let replacement = simulation.spawn("COMPANION").unwrap();
         assert!(replacement > second);
         simulation.step(1);
         assert!(simulation.drain_events().is_empty());
@@ -334,11 +342,9 @@ mod tests {
 
     #[test]
     fn clicks_change_only_the_target_with_a_click_color() {
-        let addon = config::tests::layer(
-            "desert-companion.yaml",
-            include_str!("../../public/config/addons/desert-companion.yaml"),
-        );
-        let mut session = Simulation::from_layers(&[config::tests::base(), addon]).unwrap();
+        let [units, scene] = config::tests::shipped_scene();
+        let addon = config::tests::shipped_addon();
+        let mut session = Simulation::from_layers(&[units, scene, addon]).unwrap();
         let cat = session.entities[&SimId(1)].0;
         let companion = session.entities[&SimId(2)].0;
         session

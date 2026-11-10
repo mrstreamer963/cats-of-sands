@@ -113,7 +113,7 @@ form.addEventListener('submit', async event => {
   errorMessage.hidden = true;
   try {
     const addons = orderAddons(selectedAddons());
-    const files = ['config/base.yaml', ...addons.map(addon => addon.path)];
+    const files = ['config/units.yaml', 'config/base.yaml', ...addons.map(addon => addon.path)];
     await init();
     const layers = await Promise.all(files.map(loadLayer));
     const next = new Session(layers);
