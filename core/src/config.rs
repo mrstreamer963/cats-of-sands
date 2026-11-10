@@ -32,11 +32,14 @@ pub struct Position {
 
 pub fn load(layers: &[Layer]) -> Result<Config, String> {
     let mut merged = Value::Mapping(Mapping::new());
-    for layer in layers {
-        let document: Value = serde_yaml_ng::from_str(&layer.text)
+    for (index, layer) in layers.iter().enumerate() {
+        let mut document: Value = serde_yaml_ng::from_str(&layer.text)
             .map_err(|error| format!("{}: {error}", layer.name))?;
-        if !document.is_mapping() {
+        let Some(mapping) = document.as_mapping_mut() else {
             return Err(format!("{}: ожидается объект YAML", layer.name));
+        };
+        if index > 0 {
+            mapping.remove("addon");
         }
         merge(&mut merged, document);
     }

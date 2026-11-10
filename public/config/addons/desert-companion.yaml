@@ -1,3 +1,6 @@
+addon:
+  id: desert-companion
+  name: Пустынный спутник
 entities:
   cat:
     speed: 150

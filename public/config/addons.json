@@ -1,0 +1,9 @@
+{
+  "addons": [
+    {
+      "id": "desert-companion",
+      "name": "Пустынный спутник",
+      "path": "config/addons/desert-companion.yaml"
+    }
+  ]
+}

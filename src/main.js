@@ -1,5 +1,4 @@
 import init, { Session } from '../core/pkg/sand_simulation.js';
-import { addons } from './addons.js';
 import './style.css';
 
 const storageKey = 'cats-of-sands.addons';
@@ -20,19 +19,34 @@ function restoreSelection() {
   }
 }
 
-const selected = restoreSelection();
-const checkboxes = addons.map(addon => {
-  const label = document.createElement('label');
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.checked = selected.has(addon.id);
-  label.append(checkbox, addon.name);
-  choices.append(label);
-  return checkbox;
-});
+let addonChoices = [];
+
+async function showAddons() {
+  try {
+    const response = await fetch(import.meta.env.BASE_URL + 'config/addons.json');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const catalog = await response.json();
+    const selected = restoreSelection();
+    addonChoices = catalog.addons.map(addon => {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected.has(addon.id);
+      label.append(checkbox, addon.name);
+      choices.append(label);
+      return { addon, checkbox };
+    });
+    launch.disabled = false;
+  } catch (error) {
+    errorMessage.textContent = `Каталог аддонов: ${error.message}`;
+    errorMessage.hidden = false;
+  }
+}
 
 function selectedAddons() {
-  return addons.filter((_, index) => checkboxes[index].checked);
+  return addonChoices.filter(({ checkbox }) => checkbox.checked).map(({ addon }) => addon);
 }
 
 choices.addEventListener('change', () => {
@@ -45,7 +59,8 @@ choices.addEventListener('change', () => {
 
 async function loadLayer(name) {
   try {
-    const response = await fetch(import.meta.env.BASE_URL + name);
+    const path = name.split('/').map(encodeURIComponent).join('/');
+    const response = await fetch(import.meta.env.BASE_URL + path);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -79,7 +94,7 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
   if (launch.disabled) return;
 
-  const files = ['config/base.yaml', ...selectedAddons().map(addon => addon.file)];
+  const files = ['config/base.yaml', ...selectedAddons().map(addon => addon.path)];
   fields.disabled = true;
   launch.disabled = true;
   errorMessage.hidden = true;
@@ -101,3 +116,5 @@ form.addEventListener('submit', async event => {
     launch.disabled = false;
   }
 });
+
+showAddons();
