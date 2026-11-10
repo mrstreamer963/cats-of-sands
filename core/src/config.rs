@@ -350,7 +350,11 @@ pub(crate) mod tests {
         assert_eq!(config.len(), 1);
         let session = crate::Simulation::from_config(config);
         let cat = session.entities[&SimId(1)].0;
-        assert!(session.world.get::<Sprite>(cat).is_none());
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, SimId(1));
+        assert_eq!(snapshot[0].type_name, "cat");
+        assert!(snapshot[0].sprite.is_none());
         assert_eq!(
             session.world.get::<Speed>(cat).unwrap().0,
             Fixed::from_int(120)

@@ -4,7 +4,8 @@ mod sprite;
 
 pub(crate) use click_color::ClickColor;
 pub(crate) use speed::Speed;
-pub(crate) use sprite::{Position, Sprite};
+pub(crate) use sprite::Position;
+pub use sprite::Sprite;
 
 use bevy_ecs::prelude::*;
 use serde::de::DeserializeOwned;

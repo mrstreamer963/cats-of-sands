@@ -7,12 +7,13 @@ mod observers;
 mod sim_id;
 mod systems;
 
+pub use components::Sprite;
 pub use config::Layer;
 pub use fixed::Fixed;
 pub use sim_id::SimId;
 
 use bevy_ecs::prelude::*;
-use components::{PreparedComponent, Sprite};
+use components::PreparedComponent;
 use observers::{Clicked, apply_click_color};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -24,14 +25,12 @@ const STEP: f64 = 1.0 / TICKS_PER_SECOND as f64;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 
 #[derive(Serialize)]
-pub struct SpriteSnapshot<'a> {
+pub struct EntitySnapshot<'a> {
     pub id: SimId,
     #[serde(rename = "type")]
     pub type_name: &'a str,
-    pub x: f64,
-    pub y: f64,
-    pub radius: f64,
-    pub color: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sprite: Option<&'a Sprite>,
 }
 
 pub enum Command {
@@ -151,19 +150,13 @@ impl Simulation {
         }
     }
 
-    pub fn snapshot(&self) -> Vec<SpriteSnapshot<'_>> {
+    pub fn snapshot(&self) -> Vec<EntitySnapshot<'_>> {
         self.entities
             .iter()
-            .filter_map(|(&id, (entity, type_name))| {
-                let sprite = self.world.get::<Sprite>(*entity)?;
-                Some(SpriteSnapshot {
-                    id,
-                    type_name,
-                    x: sprite.x.to_f64(),
-                    y: sprite.y.to_f64(),
-                    radius: sprite.radius.to_f64(),
-                    color: &sprite.color,
-                })
+            .map(|(&id, (entity, type_name))| EntitySnapshot {
+                id,
+                type_name,
+                sprite: self.world.get::<Sprite>(*entity),
             })
             .collect()
     }
@@ -294,11 +287,11 @@ mod tests {
         simulation.step(1);
 
         let snapshot = simulation.snapshot();
-        let first_view = snapshot.iter().find(|sprite| sprite.id == first).unwrap();
-        let second_view = snapshot.iter().find(|sprite| sprite.id == second).unwrap();
+        let first_view = snapshot.iter().find(|entity| entity.id == first).unwrap();
+        let second_view = snapshot.iter().find(|entity| entity.id == second).unwrap();
         assert_eq!(first_view.type_name, second_view.type_name);
-        assert_eq!(first_view.color, "#f1a2ca");
-        assert_eq!(second_view.color, "#80d8c4");
+        assert_eq!(first_view.sprite.unwrap().color, "#f1a2ca");
+        assert_eq!(second_view.sprite.unwrap().color, "#80d8c4");
         assert_eq!(simulation.drain_events()[0].id, first);
 
         simulation
@@ -313,7 +306,9 @@ mod tests {
             simulation
                 .snapshot()
                 .iter()
-                .find(|sprite| sprite.id == replacement)
+                .find(|entity| entity.id == replacement)
+                .unwrap()
+                .sprite
                 .unwrap()
                 .color,
             "#80d8c4",
@@ -328,7 +323,7 @@ mod tests {
         );
         let mut simulation = Simulation::from_layers(&[scene]).unwrap();
         simulation.step(1);
-        assert_eq!(simulation.snapshot()[0].x, 639.875);
+        assert_eq!(simulation.snapshot()[0].sprite.unwrap().x.to_f64(), 639.875);
     }
 
     #[test]

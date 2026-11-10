@@ -1,7 +1,7 @@
 use super::{PreparedComponent, deserialize, fixed, prepare, validate_color};
 use crate::Fixed;
 use bevy_ecs::prelude::Component;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_yaml_ng::Value;
 
 #[derive(Deserialize)]
@@ -11,10 +11,14 @@ pub(crate) struct Position {
     y: f64,
 }
 
-#[derive(Clone, Component)]
-pub(crate) struct Sprite {
+/// Visual component of an entity.
+#[derive(Clone, Component, Serialize)]
+pub struct Sprite {
+    #[serde(serialize_with = "serialize_fixed")]
     pub x: Fixed,
+    #[serde(serialize_with = "serialize_fixed")]
     pub y: Fixed,
+    #[serde(serialize_with = "serialize_fixed")]
     pub radius: Fixed,
     pub color: String,
 }
@@ -53,4 +57,8 @@ impl Sprite {
             color,
         })
     }
+}
+
+fn serialize_fixed<S: Serializer>(value: &Fixed, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(value.to_f64())
 }

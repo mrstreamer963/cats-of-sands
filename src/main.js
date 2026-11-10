@@ -74,13 +74,13 @@ async function loadLayer(name) {
 let session;
 let frame;
 let previousTime;
-let drawnSprites = [];
+let drawnEntities = [];
 
 canvas.addEventListener('click', event => {
   const bounds = canvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
-  const target = drawnSprites.findLast(sprite => Math.hypot(x - sprite.x, y - sprite.y) <= sprite.radius);
+  const target = drawnEntities.findLast(({ sprite }) => Math.hypot(x - sprite.x, y - sprite.y) <= sprite.radius);
   if (target) {
     session.click(target.id);
   }
@@ -94,8 +94,8 @@ function draw(time) {
   previousTime = time;
 
   context.clearRect(0, 0, canvas.width, canvas.height);
-  drawnSprites = session.snapshot();
-  for (const sprite of drawnSprites) {
+  drawnEntities = session.snapshot().filter(entity => entity.sprite !== undefined);
+  for (const { sprite } of drawnEntities) {
     context.fillStyle = sprite.color;
     context.beginPath();
     context.arc(sprite.x, sprite.y, sprite.radius, 0, Math.PI * 2);
@@ -120,7 +120,7 @@ form.addEventListener('submit', async event => {
     cancelAnimationFrame(frame);
     session?.free();
     session = next;
-    drawnSprites = [];
+    drawnEntities = [];
     previousTime = undefined;
     canvas.hidden = false;
     frame = requestAnimationFrame(draw);
