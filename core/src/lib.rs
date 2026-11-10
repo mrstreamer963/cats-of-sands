@@ -1,26 +1,18 @@
 mod components;
 mod config;
+mod observers;
+mod systems;
 
 use bevy_ecs::prelude::*;
-use components::{ClickColor, PreparedComponent, Speed, Sprite};
+use components::{PreparedComponent, Sprite};
+use observers::{Clicked, apply_click_color};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use systems::move_sprites;
 use wasm_bindgen::prelude::*;
 
 const STEP: f64 = 1.0 / 60.0;
 const MAX_FRAME_SECONDS: f64 = 0.25;
-const SCENE_WIDTH: f64 = 640.0;
-
-#[derive(EntityEvent)]
-struct Clicked {
-    entity: Entity,
-}
-
-fn apply_click_color(click: On<Clicked>, mut sprites: Query<(&mut Sprite, &ClickColor)>) {
-    if let Ok((mut sprite, color)) = sprites.get_mut(click.entity) {
-        sprite.color.clone_from(&color.0);
-    }
-}
 
 #[derive(Serialize)]
 struct SpriteSnapshot<'a> {
@@ -29,12 +21,6 @@ struct SpriteSnapshot<'a> {
     y: f64,
     radius: f64,
     color: &'a str,
-}
-
-fn move_sprites(mut sprites: Query<(&mut Sprite, &Speed)>) {
-    for (mut sprite, speed) in &mut sprites {
-        sprite.x = (sprite.x + speed.0 * STEP).rem_euclid(SCENE_WIDTH);
-    }
 }
 
 #[wasm_bindgen]
@@ -118,6 +104,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::ClickColor;
 
     #[test]
     fn equal_steps_give_equal_positions_across_frame_rates() {
