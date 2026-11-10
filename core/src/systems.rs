@@ -1,3 +1,3 @@
-mod move_sprites;
+mod move_entities;
 
-pub(crate) use move_sprites::move_sprites;
+pub(crate) use move_entities::move_entities;

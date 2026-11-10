@@ -16,10 +16,6 @@ impl Speed {
         }
 
         let fields: Fields = deserialize(value, path)?;
-        Self::validated(fields.value, &format!("{path}.value")).map(prepare)
-    }
-
-    pub(crate) fn validated(value: f64, path: &str) -> Result<Self, String> {
-        fixed(path, value).map(Self)
+        fixed(&format!("{path}.value"), fields.value).map(|value| prepare(Self(value)))
     }
 }

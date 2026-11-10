@@ -80,7 +80,7 @@ canvas.addEventListener('click', event => {
   const bounds = canvas.getBoundingClientRect();
   const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
   const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
-  const target = drawnEntities.findLast(({ sprite }) => Math.hypot(x - sprite.x, y - sprite.y) <= sprite.radius);
+  const target = drawnEntities.findLast(({ position, sprite }) => Math.hypot(x - position.x, y - position.y) <= sprite.radius);
   if (target) {
     session.click(target.id);
   }
@@ -94,11 +94,11 @@ function draw(time) {
   previousTime = time;
 
   context.clearRect(0, 0, canvas.width, canvas.height);
-  drawnEntities = session.snapshot().filter(entity => entity.sprite !== undefined);
-  for (const { sprite } of drawnEntities) {
+  drawnEntities = session.snapshot().filter(entity => entity.position !== undefined && entity.sprite !== undefined);
+  for (const { position, sprite } of drawnEntities) {
     context.fillStyle = sprite.color;
     context.beginPath();
-    context.arc(sprite.x, sprite.y, sprite.radius, 0, Math.PI * 2);
+    context.arc(position.x, position.y, sprite.radius, 0, Math.PI * 2);
     context.fill();
   }
   frame = requestAnimationFrame(draw);

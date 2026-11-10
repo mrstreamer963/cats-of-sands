@@ -1,13 +1,15 @@
 mod click_color;
+mod position;
 mod speed;
 mod sprite;
 
 pub(crate) use click_color::ClickColor;
+pub use position::Position;
 pub(crate) use speed::Speed;
-pub(crate) use sprite::Position;
 pub use sprite::Sprite;
 
 use bevy_ecs::prelude::*;
+use serde::Serializer;
 use serde::de::DeserializeOwned;
 use serde_yaml_ng::Value;
 use std::collections::HashMap;
@@ -18,6 +20,7 @@ pub(crate) type Registry = HashMap<&'static str, Loader>;
 
 pub(crate) fn registry() -> Registry {
     HashMap::from([
+        ("Position", Position::load as Loader),
         ("Sprite", Sprite::load as Loader),
         ("Speed", Speed::load as Loader),
         ("ClickColor", ClickColor::load as Loader),
@@ -54,4 +57,8 @@ fn validate_color(path: &str, value: &str) -> Result<(), String> {
     } else {
         Err(format!("{path}: ожидается цвет #RRGGBB"))
     }
+}
+
+fn serialize_fixed<S: Serializer>(value: &crate::Fixed, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(value.to_f64())
 }

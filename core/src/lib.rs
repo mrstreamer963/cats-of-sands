@@ -7,7 +7,7 @@ mod observers;
 mod sim_id;
 mod systems;
 
-pub use components::Sprite;
+pub use components::{Position, Sprite};
 pub use config::Layer;
 pub use fixed::Fixed;
 pub use sim_id::SimId;
@@ -17,7 +17,7 @@ use components::PreparedComponent;
 use observers::{Clicked, apply_click_color};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use systems::move_sprites;
+use systems::move_entities;
 use wasm_bindgen::prelude::*;
 
 const TICKS_PER_SECOND: i64 = 60;
@@ -29,6 +29,8 @@ pub struct EntitySnapshot<'a> {
     pub id: SimId,
     #[serde(rename = "type")]
     pub type_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<&'a Position>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sprite: Option<&'a Sprite>,
 }
@@ -68,7 +70,7 @@ impl Simulation {
         world.init_resource::<SimEvents>();
         world.add_observer(apply_click_color);
         let mut schedule = Schedule::default();
-        schedule.add_systems(move_sprites);
+        schedule.add_systems(move_entities);
         let initial_types: Vec<_> = config.keys().cloned().collect();
         let mut simulation = Self {
             world,
@@ -156,6 +158,7 @@ impl Simulation {
             .map(|(&id, (entity, type_name))| EntitySnapshot {
                 id,
                 type_name,
+                position: self.world.get::<Position>(*entity),
                 sprite: self.world.get::<Sprite>(*entity),
             })
             .collect()
@@ -263,7 +266,7 @@ mod tests {
             two_steps_per_frame.advance(2.0 * STEP);
         }
         for session in [&mut one_step_per_frame, &mut two_steps_per_frame] {
-            let mut query = session.simulation.world.query::<&Sprite>();
+            let mut query = session.simulation.world.query::<&Position>();
             assert_eq!(
                 query.single(&session.simulation.world).unwrap().x,
                 Fixed::from_int(140)
@@ -319,11 +322,14 @@ mod tests {
     fn fractional_negative_speed_wraps_with_integer_arithmetic() {
         let scene = config::tests::layer(
             "fractional.yaml",
-            "entities: {cat: {position: {x: 0.25, y: 0}, radius: 1, color: '#ffffff', speed: -22.5}}",
+            "entities: {cat: {Position: {x: 0.25, y: 0}, Speed: {value: -22.5}}}",
         );
         let mut simulation = Simulation::from_layers(&[scene]).unwrap();
         simulation.step(1);
-        assert_eq!(simulation.snapshot()[0].sprite.unwrap().x.to_f64(), 639.875);
+        assert_eq!(
+            simulation.snapshot()[0].position.unwrap().x.to_f64(),
+            639.875
+        );
     }
 
     #[test]
@@ -368,6 +374,9 @@ mod tests {
         assert_eq!(session.world.get::<Sprite>(cat).unwrap().color, "#f9c86d");
         let companion = session.world.get::<Sprite>(companion).unwrap();
         assert_eq!(companion.color, "#f1a2ca");
-        assert_eq!(companion.x, Fixed::from_int(43));
+        assert_eq!(
+            session.snapshot()[1].position.unwrap().x,
+            Fixed::from_int(43)
+        );
     }
 }
