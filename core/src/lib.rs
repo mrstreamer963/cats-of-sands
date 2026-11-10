@@ -2,15 +2,15 @@ mod config;
 
 use bevy_ecs::prelude::*;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
 const STEP: f64 = 1.0 / 60.0;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 const SCENE_WIDTH: f64 = 640.0;
 
-#[derive(Component, Serialize)]
+#[derive(Component)]
 struct Sprite {
-    id: String,
     x: f64,
     y: f64,
     radius: f64,
@@ -19,6 +19,29 @@ struct Sprite {
 
 #[derive(Component)]
 struct Speed(f64);
+
+#[derive(Component)]
+struct ClickColor(String);
+
+#[derive(EntityEvent)]
+struct Clicked {
+    entity: Entity,
+}
+
+fn apply_click_color(click: On<Clicked>, mut sprites: Query<(&mut Sprite, &ClickColor)>) {
+    if let Ok((mut sprite, color)) = sprites.get_mut(click.entity) {
+        sprite.color.clone_from(&color.0);
+    }
+}
+
+#[derive(Serialize)]
+struct SpriteSnapshot<'a> {
+    id: &'a str,
+    x: f64,
+    y: f64,
+    radius: f64,
+    color: &'a str,
+}
 
 fn move_sprites(mut sprites: Query<(&mut Sprite, &Speed)>) {
     for (mut sprite, speed) in &mut sprites {
@@ -29,6 +52,7 @@ fn move_sprites(mut sprites: Query<(&mut Sprite, &Speed)>) {
 #[wasm_bindgen]
 pub struct Session {
     world: World,
+    entities: BTreeMap<String, Entity>,
     schedule: Schedule,
     accumulator: f64,
 }
@@ -55,32 +79,59 @@ impl Session {
     }
 
     pub fn snapshot(&mut self) -> Result<JsValue, JsError> {
-        let mut query = self.world.query::<&Sprite>();
-        let sprites: Vec<_> = query.iter(&self.world).collect();
+        let sprites: Vec<_> = self
+            .entities
+            .iter()
+            .filter_map(|(id, &entity)| {
+                let sprite = self.world.get::<Sprite>(entity)?;
+                Some(SpriteSnapshot {
+                    id,
+                    x: sprite.x,
+                    y: sprite.y,
+                    radius: sprite.radius,
+                    color: &sprite.color,
+                })
+            })
+            .collect();
         Ok(serde_wasm_bindgen::to_value(&sprites)?)
+    }
+
+    pub fn click(&mut self, id: &str) {
+        if let Some(&entity) = self.entities.get(id) {
+            self.world.trigger(Clicked { entity });
+        }
     }
 }
 
 impl Session {
-    fn from_config(config: config::Config) -> Self {
+    fn from_config(config: BTreeMap<String, config::Components>) -> Self {
         let mut world = World::new();
-        for (id, entity) in config.entities {
-            world.spawn((
-                Sprite {
-                    id,
-                    x: entity.position.x,
-                    y: entity.position.y,
-                    radius: entity.radius,
-                    color: entity.color,
-                },
-                Speed(entity.speed),
-            ));
+        world.add_observer(apply_click_color);
+        let mut entities = BTreeMap::new();
+        for (id, components) in config {
+            let mut entity = world.spawn_empty();
+            if let Some(sprite) = components.sprite {
+                entity.insert(Sprite {
+                    x: sprite.position.x,
+                    y: sprite.position.y,
+                    radius: sprite.radius,
+                    color: sprite.color,
+                });
+            }
+            if let Some(speed) = components.speed {
+                entity.insert(Speed(speed.value));
+            }
+            if let Some(color) = components.click_color {
+                entity.insert(ClickColor(color.color));
+            }
+            entities.insert(id, entity.id());
         }
 
         let mut schedule = Schedule::default();
         schedule.add_systems(move_sprites);
         Self {
             world,
+            entities,
             schedule,
             accumulator: 0.0,
         }
@@ -108,5 +159,28 @@ mod tests {
             let mut query = session.world.query::<&Sprite>();
             assert_eq!(query.single(&session.world).unwrap().x, 140.0);
         }
+    }
+
+    #[test]
+    fn clicks_change_only_the_target_with_a_click_color() {
+        let addon = config::tests::layer(
+            "desert-companion.yaml",
+            include_str!("../../public/config/addons/desert-companion.yaml"),
+        );
+        let mut session =
+            Session::from_config(config::load(&[config::tests::base(), addon]).unwrap());
+        let cat = session.entities["cat"];
+        let companion = session.entities["companion"];
+        session
+            .world
+            .entity_mut(cat)
+            .insert(ClickColor("#00ff00".into()));
+
+        session.click("companion");
+        session.advance(STEP);
+        assert_eq!(session.world.get::<Sprite>(cat).unwrap().color, "#f9c86d");
+        let companion = session.world.get::<Sprite>(companion).unwrap();
+        assert_eq!(companion.color, "#f1a2ca");
+        assert_eq!(companion.x, 41.5);
     }
 }
