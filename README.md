@@ -27,6 +27,8 @@ npm run preview
 
 `dev` и `build` собирают WASM перед запуском Vite. После изменения Rust-кода перезапусти dev-сервер или выполни `npm run wasm`.
 
+Устройство симуляции и добавление компонентов, систем и наблюдателей описаны в [документации core](core/README.md).
+
 ## Конфигурация
 
 Базовая сцена находится в [base.yaml](public/config/base.yaml). Чтобы добавить аддон, положите YAML в [public/config/addons](public/config/addons) и вручную добавьте запись в [addons.json](public/config/addons.json). Укажите уникальный строковый `id`, отображаемое `name` и путь `path` относительно корня сайта, например `config/addons/desert-companion.yaml`. Если хостинг позволяет обновлять статические файлы отдельно, достаточно опубликовать YAML и обновлённый JSON.

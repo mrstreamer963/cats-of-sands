@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 mod components;
 mod config;
 mod observers;
@@ -24,6 +26,7 @@ struct SpriteSnapshot<'a> {
 }
 
 #[wasm_bindgen]
+/// Игровая сессия с собственным миром Bevy и фиксированным шагом симуляции.
 pub struct Session {
     world: World,
     entities: BTreeMap<String, Entity>,
@@ -33,6 +36,9 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
+    /// Загружает упорядоченные YAML-слои в виде массива объектов с полями `name` и `text`.
+    ///
+    /// Возвращает ошибку загрузки или проверки конфигурации, если сессию создать нельзя.
     #[wasm_bindgen(constructor)]
     pub fn new(layers: JsValue) -> Result<Session, JsError> {
         let layers: Vec<config::Layer> = serde_wasm_bindgen::from_value(layers)?;
@@ -40,6 +46,9 @@ impl Session {
         Ok(Self::from_config(config))
     }
 
+    /// Накапливает прошедшее время в секундах и выполняет доступные шаги симуляции.
+    ///
+    /// Принимает до 0,25 секунды за вызов. Неположительные и неконечные значения пропускаются.
     pub fn advance(&mut self, seconds: f64) {
         if !seconds.is_finite() || seconds <= 0.0 {
             return;
@@ -52,6 +61,7 @@ impl Session {
         }
     }
 
+    /// Возвращает массив объектов с полями `id`, `x`, `y`, `radius` и `color`.
     pub fn snapshot(&mut self) -> Result<JsValue, JsError> {
         let sprites: Vec<_> = self
             .entities
@@ -70,6 +80,7 @@ impl Session {
         Ok(serde_wasm_bindgen::to_value(&sprites)?)
     }
 
+    /// Отправляет событие клика сущности по её ID. Неизвестный ID пропускается.
     pub fn click(&mut self, id: &str) {
         if let Some(&entity) = self.entities.get(id) {
             self.world.trigger(Clicked { entity });
