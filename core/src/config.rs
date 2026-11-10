@@ -256,8 +256,8 @@ pub(crate) mod tests {
 
     pub(crate) fn shipped_addon() -> Layer {
         layer(
-            "desert-companion.yaml",
-            include_str!("../../public/config/addons/desert-companion.yaml"),
+            "desert-companion/units.yaml",
+            include_str!("../../public/config/addons/desert-companion/units.yaml"),
         )
     }
 

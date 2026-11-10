@@ -1,0 +1,8 @@
+{
+  "id": "desert-companion",
+  "name": "Пустынный спутник",
+  "layers": [
+    "units.yaml"
+  ],
+  "sha256": "7992cd50818c46ef79fe0a4d89615aeed5c2bb2c6545f895616c19ceb1f45fbd"
+}

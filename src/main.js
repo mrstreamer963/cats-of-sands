@@ -1,5 +1,8 @@
 import init, { Session } from '../core/pkg/sand_simulation.js';
-import { orderAddons } from './addons.js';
+import {
+  addonCatalogPath, addonRoot, checkAddonId, orderAddons, resourceManifest,
+  validateAddonCatalog, validateAddonManifest, validateResourceManifest,
+} from './addons.js';
 import './style.css';
 
 const storageKey = 'cats-of-sands.addons';
@@ -22,15 +25,39 @@ function restoreSelection() {
 
 let addonChoices = [];
 
+async function loadJson(name, validate) {
+  const { text } = await loadLayer(name);
+  try {
+    return validate(JSON.parse(text));
+  } catch (error) {
+    throw new Error(`${name}: ${error.message}`);
+  }
+}
+
+async function loadAddons() {
+  const folders = await loadJson(addonCatalogPath, validateAddonCatalog);
+  const addons = await Promise.all(folders.map(async folder => {
+    const root = `${addonRoot}/${folder}`;
+    const manifestPath = root + '/' + resourceManifest;
+    const manifest = await loadJson(manifestPath, validateAddonManifest);
+    return { ...manifest, layers: manifest.layers.map(path => root + '/' + path), manifestPath };
+  }));
+  const ids = new Set();
+  for (const addon of addons) {
+    try {
+      checkAddonId(ids, addon.id);
+    } catch (error) {
+      throw new Error(`${addon.manifestPath}: ${error.message}`);
+    }
+  }
+  return addons;
+}
+
 async function showAddons() {
   try {
-    const response = await fetch(import.meta.env.BASE_URL + 'config/addons.json');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const catalog = await response.json();
+    const addons = await loadAddons();
     const selected = restoreSelection();
-    addonChoices = catalog.addons.map(addon => {
+    addonChoices = addons.map(addon => {
       const label = document.createElement('label');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
@@ -113,7 +140,8 @@ form.addEventListener('submit', async event => {
   errorMessage.hidden = true;
   try {
     const addons = orderAddons(selectedAddons());
-    const files = ['config/units.yaml', 'config/base.yaml', ...addons.map(addon => addon.path)];
+    const base = await loadJson('config/' + resourceManifest, validateResourceManifest);
+    const files = [...base.layers.map(path => 'config/' + path), ...addons.flatMap(addon => addon.layers)];
     await init();
     const layers = await Promise.all(files.map(loadLayer));
     const next = new Session(layers);
