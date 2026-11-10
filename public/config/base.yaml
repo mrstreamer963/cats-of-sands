@@ -2,4 +2,4 @@ entities:
   cat:
     Position: { x: 80, y: 150 }
     Sprite: { radius: 18, color: "#f9c86d" }
-    Speed: { value: 60 }
+    Speed: 60

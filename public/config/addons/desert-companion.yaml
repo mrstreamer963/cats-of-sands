@@ -3,9 +3,9 @@ addon:
   name: Пустынный спутник
 entities:
   - override: cat
-    Speed: { value: 150 }
+    Speed: 150
   - new: companion
     Position: { x: 40, y: 230 }
     Sprite: { radius: 14, color: "#80d8c4" }
-    Speed: { value: 90 }
+    Speed: 90
     ClickColor: { color: "#f1a2ca" }

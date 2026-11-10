@@ -45,6 +45,12 @@ pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>
             apply_entity_rules(rules_map, entries)
                 .map_err(|error| format!("{}: {error}", layer.name))?;
             *entities = rules;
+        } else if let Some(Value::Mapping(entities)) = mapping.get_mut("entities") {
+            for (_, entity) in entities {
+                if let Value::Mapping(entity) = entity {
+                    normalize_speed(entity);
+                }
+            }
         }
         merge(&mut merged, document);
     }
@@ -96,6 +102,7 @@ fn apply_entity_rules(entities: &mut Mapping, entries: Vec<Value>) -> Result<(),
             ("update", false) => continue,
             _ => {}
         }
+        normalize_speed(&mut entry);
         let value = Value::Mapping(entry);
         if let Some(previous) = entities.get_mut(&id) {
             merge(previous, value);
@@ -104,6 +111,14 @@ fn apply_entity_rules(entities: &mut Mapping, entries: Vec<Value>) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn normalize_speed(entity: &mut Mapping) {
+    if let Some(speed @ Value::Number(_)) = entity.get_mut("Speed") {
+        let mut fields = Mapping::new();
+        fields.insert(Value::String("value".into()), std::mem::take(speed));
+        *speed = Value::Mapping(fields);
+    }
 }
 
 impl EntityConfig {
@@ -188,6 +203,24 @@ pub(crate) mod tests {
             session.world.get::<Speed>(cat).unwrap().0,
             Fixed::from_int(150)
         );
+    }
+
+    #[test]
+    fn scalar_and_mapping_speeds_merge_across_layers() {
+        let base = layer("base.yaml", "entities: {cat: {Speed: {value: 60}}}");
+        let scalar = layer("scalar.yaml", "entities: [{override: cat, Speed: -22.5}]");
+        let empty = layer("empty.yaml", "entities: {cat: {Speed: {}}}");
+        let mapping = layer("mapping.yaml", "entities: {cat: {Speed: {value: 90}}}");
+        let layers = [base, scalar, empty, mapping];
+
+        for (count, expected) in [(3, -22.5), (4, 90.0)] {
+            let simulation = crate::Simulation::from_layers(&layers[..count]).unwrap();
+            let cat = simulation.entities[&SimId(1)].0;
+            assert_eq!(
+                simulation.world.get::<Speed>(cat).unwrap().0.to_f64(),
+                expected
+            );
+        }
     }
 
     #[test]
