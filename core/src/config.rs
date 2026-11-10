@@ -36,6 +36,28 @@ pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>
         if index > 0 {
             mapping.remove("addon");
         }
+        if let Some(entities) = mapping.get_mut("entities") {
+            if let Value::Sequence(entries) = entities {
+                let mut rules = merged
+                    .as_mapping_mut()
+                    .unwrap()
+                    .remove("entities")
+                    .unwrap_or_else(|| Value::Mapping(Mapping::new()));
+                let rules_map = rules.as_mapping_mut().ok_or_else(|| {
+                    format!("{}: entities: ожидается словарь сущностей", layer.name)
+                })?;
+                apply_entity_rules(rules_map, std::mem::take(entries))
+                    .map_err(|error| format!("{}: {error}", layer.name))?;
+                *entities = rules;
+            } else if let Some(entities) = entities.as_mapping_mut() {
+                for (id, entity) in entities {
+                    if let (Some(id), Some(entity)) = (id.as_str(), entity.as_mapping_mut()) {
+                        normalize_components(entity, &format!("entities.{id}"))
+                            .map_err(|error| format!("{}: {error}", layer.name))?;
+                    }
+                }
+            }
+        }
         merge(&mut merged, document);
     }
 
@@ -50,6 +72,78 @@ pub fn load(layers: &[Layer]) -> Result<BTreeMap<String, Vec<PreparedComponent>>
             Ok((id, components))
         })
         .collect()
+}
+
+fn apply_entity_rules(entities: &mut Mapping, entries: Vec<Value>) -> Result<(), String> {
+    for (index, entry) in entries.into_iter().enumerate() {
+        let path = format!("entities[{index}]");
+        let Value::Mapping(mut entry) = entry else {
+            return Err(format!("{path}: ожидается объект"));
+        };
+        let mut keys = ["id", "type", "new", "override", "update", "delete"]
+            .into_iter()
+            .filter(|key| entry.contains_key(*key));
+        let operation = keys
+            .next()
+            .filter(|_| keys.next().is_none())
+            .ok_or_else(|| {
+                format!("{path}: укажите один из id, type, new, override, update, delete")
+            })?;
+        let id = entry.remove(operation).unwrap();
+        let name = id
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| format!("{path}.{operation}: ожидается непустой строковый ID"))?;
+        let exists = entities.contains_key(&id);
+        match (operation, exists) {
+            ("new", true) => return Err(format!("{path}: сущность {name} уже существует")),
+            ("override", false) => return Err(format!("{path}: сущность {name} не найдена")),
+            ("delete", _) => {
+                if !entry.is_empty() {
+                    return Err(format!("{path}: delete принимает только ID сущности"));
+                }
+                entities.remove(&id);
+                continue;
+            }
+            ("update", false) => continue,
+            _ => {}
+        }
+        normalize_components(&mut entry, &format!("entities.{name}"))?;
+        let value = Value::Mapping(entry);
+        if let Some(previous) = entities.get_mut(&id) {
+            merge(previous, value);
+        } else {
+            entities.insert(id, value);
+        }
+    }
+    Ok(())
+}
+
+fn normalize_components(entity: &mut Mapping, path: &str) -> Result<(), String> {
+    let Some(components @ Value::Sequence(_)) = entity.get_mut("components") else {
+        return Ok(());
+    };
+    let Value::Sequence(entries) = std::mem::take(components) else {
+        unreachable!();
+    };
+    let mut by_type = Mapping::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        let path = format!("{path}.components[{index}]");
+        let Value::Mapping(mut entry) = entry else {
+            return Err(format!("{path}: ожидается объект"));
+        };
+        let name = entry.remove("type").unwrap_or(Value::Null);
+        let kind = name
+            .as_str()
+            .filter(|kind| !kind.trim().is_empty())
+            .ok_or_else(|| format!("{path}.type: ожидается непустое имя компонента"))?;
+        if by_type.contains_key(&name) {
+            return Err(format!("{path}.type: компонент {kind} указан повторно"));
+        }
+        by_type.insert(name, Value::Mapping(entry));
+    }
+    *components = Value::Mapping(by_type);
+    Ok(())
 }
 
 impl EntityConfig {
@@ -189,7 +283,7 @@ pub(crate) mod tests {
         );
         let addon = layer(
             "color.yaml",
-            "entities: {cat: {components: {Sprite: {color: '#ff0000'}}}}",
+            "entities: [{override: cat, components: [{type: Sprite, color: '#ff0000'}]}]",
         );
         let entities = load(&[scene, addon]).unwrap();
         let session = crate::Session::from_config(entities);
@@ -227,5 +321,45 @@ pub(crate) mod tests {
         let session = crate::Session::from_config(load(&[base(), addon]).unwrap());
         let cat = session.entities["cat"];
         assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 120.0);
+    }
+
+    #[test]
+    fn entity_rules_apply_in_order() {
+        let addon = layer(
+            "rules.yaml",
+            "entities:
+  - update: absent
+    speed: 100
+  - delete: cat
+  - id: cat
+    components:
+      - type: Speed
+        value: 120",
+        );
+        let config = load(&[base(), addon]).unwrap();
+        assert_eq!(config.len(), 1);
+        let session = crate::Session::from_config(config);
+        let cat = session.entities["cat"];
+        assert!(session.world.get::<Sprite>(cat).is_none());
+        assert_eq!(session.world.get::<Speed>(cat).unwrap().0, 120.0);
+    }
+
+    #[test]
+    fn conflicting_rules_report_the_source_and_entry() {
+        for (rule, expected) in [
+            ("new: cat", "уже существует"),
+            ("override: absent", "не найдена"),
+            (
+                "id: cat, components: [{type: Speed}, {type: Speed}]",
+                "указан повторно",
+            ),
+        ] {
+            let addon = layer("rules.yaml", &format!("entities: [{{{rule}}}]"));
+            let error = load(&[base(), addon]).err().unwrap();
+            assert!(
+                error.starts_with("rules.yaml: entities") && error.contains(expected),
+                "{error}"
+            );
+        }
     }
 }

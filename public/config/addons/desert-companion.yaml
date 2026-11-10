@@ -2,16 +2,16 @@ addon:
   id: desert-companion
   name: Пустынный спутник
 entities:
-  cat:
+  - override: cat
     speed: 150
-  companion:
+  - new: companion
     speed: 90
     components:
-      Sprite:
+      - type: Sprite
         position:
           x: 40
           y: 230
         radius: 14
         color: "#80d8c4"
-      ClickColor:
+      - type: ClickColor
         color: "#f1a2ca"
