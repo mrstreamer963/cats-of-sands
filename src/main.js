@@ -115,6 +115,8 @@ async function loadLayer(name) {
 let session;
 let frame;
 let previousTime;
+let renderTick;
+let renderEntities = [];
 let drawnEntities = [];
 
 canvas.addEventListener('click', event => {
@@ -134,8 +136,25 @@ function draw(time) {
   }
   previousTime = time;
 
+  const tick = session.current_tick();
+  if (tick !== renderTick) {
+    renderEntities = session.render_snapshot();
+    renderTick = tick;
+  }
+  const alpha = session.interpolation_alpha();
+  drawnEntities = renderEntities.map(({ id, position, previous_position: previous, sprite }) => ({
+    id,
+    sprite,
+    position: {
+      // A wrap across the scene edge should not sweep through the canvas.
+      x: Math.abs(position.x - previous.x) > canvas.width / 2
+        ? position.x
+        : previous.x + (position.x - previous.x) * alpha,
+      y: previous.y + (position.y - previous.y) * alpha,
+    },
+  }));
+
   context.clearRect(0, 0, canvas.width, canvas.height);
-  drawnEntities = session.snapshot().filter(entity => entity.position !== undefined && entity.sprite !== undefined);
   for (const { position, sprite } of drawnEntities) {
     context.fillStyle = sprite.color;
     context.beginPath();
@@ -167,6 +186,7 @@ form.addEventListener('submit', async event => {
     session?.free();
     session = next;
     drawnEntities = [];
+    renderTick = undefined;
     previousTime = undefined;
     canvas.hidden = false;
     frame = requestAnimationFrame(draw);

@@ -184,6 +184,7 @@ impl Simulation {
 pub struct Session {
     simulation: Simulation,
     accumulator: f64,
+    previous_positions: BTreeMap<SimId, Position>,
 }
 
 #[wasm_bindgen]
@@ -195,6 +196,7 @@ impl Session {
         Ok(Self {
             simulation,
             accumulator: 0.0,
+            previous_positions: BTreeMap::new(),
         })
     }
 
@@ -204,10 +206,12 @@ impl Session {
             return;
         }
         self.accumulator += seconds.min(MAX_FRAME_SECONDS);
+        let mut ticks = 0;
         while self.accumulator + f64::EPSILON >= STEP {
-            self.step(1);
+            ticks += 1;
             self.accumulator = (self.accumulator - STEP).max(0.0);
         }
+        self.step(ticks);
     }
 
     pub fn current_tick(&self) -> u64 {
@@ -215,11 +219,58 @@ impl Session {
     }
 
     pub fn step(&mut self, ticks: u32) {
-        self.simulation.step(ticks);
+        if ticks == 0 {
+            return;
+        }
+        self.simulation.step(ticks - 1);
+        self.previous_positions = self
+            .simulation
+            .snapshot()
+            .into_iter()
+            .filter_map(|entity| {
+                entity
+                    .position
+                    .cloned()
+                    .map(|position| (entity.id, position))
+            })
+            .collect();
+        self.simulation.step(1);
     }
 
     pub fn snapshot(&self) -> Result<JsValue, JsError> {
         Ok(serde_wasm_bindgen::to_value(&self.simulation.snapshot())?)
+    }
+
+    /// Fraction of the current tick interval available for rendering.
+    pub fn interpolation_alpha(&self) -> f64 {
+        self.accumulator / STEP
+    }
+
+    /// Drawable entities with positions from the last two completed ticks.
+    pub fn render_snapshot(&self) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        struct RenderEntity<'a> {
+            id: SimId,
+            position: &'a Position,
+            previous_position: &'a Position,
+            sprite: &'a Sprite,
+        }
+
+        let entities: Vec<_> = self
+            .simulation
+            .snapshot()
+            .into_iter()
+            .filter_map(|entity| {
+                let position = entity.position?;
+                Some(RenderEntity {
+                    id: entity.id,
+                    position,
+                    previous_position: self.previous_positions.get(&entity.id).unwrap_or(position),
+                    sprite: entity.sprite?,
+                })
+            })
+            .collect();
+        Ok(serde_wasm_bindgen::to_value(&entities)?)
     }
 
     /// Queues a click for the next tick to execute. Unknown IDs are ignored.
@@ -263,10 +314,12 @@ mod tests {
         let mut one_step_per_frame = Session {
             simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
+            previous_positions: BTreeMap::new(),
         };
         let mut two_steps_per_frame = Session {
             simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
+            previous_positions: BTreeMap::new(),
         };
 
         for _ in 0..60 {
@@ -281,6 +334,13 @@ mod tests {
                 query.single(&session.simulation.world).unwrap().x,
                 Fixed::from_int(140)
             );
+            let entity = session.simulation.snapshot().pop().unwrap();
+            assert_eq!(
+                session.previous_positions[&entity.id].x,
+                Fixed::from_int(139)
+            );
+            session.advance(STEP / 2.0);
+            assert!((session.interpolation_alpha() - 0.5).abs() < 1e-12);
         }
     }
 
