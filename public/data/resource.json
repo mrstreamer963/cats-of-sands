@@ -1,4 +1,4 @@
 {
   "layers": ["units.yaml"],
-  "maps": ["maps/map1.yaml"]
+  "maps": ["maps/desert.yaml", "maps/map1.yaml"]
 }

@@ -1,8 +1,10 @@
-import init, { Session } from '../core/pkg/sand_simulation.js';
+import init, { Session, tiled_reference } from '../core/pkg/sand_simulation.js';
 import {
   addonCatalogPath, addonRoot, checkAddonId, orderAddons, resourceManifest,
   validateAddonCatalog, validateAddonManifest, validateBaseManifest,
 } from './addons.js';
+import { Camera } from './camera.js';
+import { drawTiled, loadTiled, relativeResource } from './tiled.js';
 import './style.css';
 
 const dataRoot = 'data/';
@@ -99,10 +101,24 @@ choices.addEventListener('change', () => {
   }
 });
 
+function resourceUrl(name) {
+  return import.meta.env.BASE_URL + name.split('/').map(encodeURIComponent).join('/');
+}
+
+async function loadImage(name) {
+  const image = new Image();
+  image.src = resourceUrl(name);
+  try {
+    await image.decode();
+    return image;
+  } catch {
+    throw new Error(`Не удалось загрузить атлас ${name}`);
+  }
+}
+
 async function loadLayer(name) {
   try {
-    const path = name.split('/').map(encodeURIComponent).join('/');
-    const response = await fetch(import.meta.env.BASE_URL + path);
+    const response = await fetch(resourceUrl(name));
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -119,11 +135,60 @@ let renderTick;
 let renderEntities = [];
 let drawnEntities = [];
 const selectedIds = new Set();
+const sceneWidth = canvas.width;
+const sceneHeight = canvas.height;
+let tiledMap;
+let camera;
+let renderedView;
+let walls = [];
+let drag;
+let suppressClick = false;
+
+function canvasPoint(event) {
+  const bounds = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - bounds.left) * canvas.width / bounds.width,
+    y: (event.clientY - bounds.top) * canvas.height / bounds.height,
+  };
+}
+
+canvas.addEventListener('wheel', event => {
+  if (!camera?.fit) return;
+  event.preventDefault();
+  const point = canvasPoint(event);
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 120 : 1);
+  camera.zoom(point.x, point.y, Math.exp(-delta * 0.0015));
+}, { passive: false });
+
+canvas.addEventListener('pointerdown', event => {
+  if (!camera?.fit || event.button !== 0 || !event.isPrimary) return;
+  suppressClick = false;
+  drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  canvas.setPointerCapture(event.pointerId);
+});
+
+canvas.addEventListener('pointermove', event => {
+  if (drag?.id !== event.pointerId) return;
+  const dx = event.clientX - drag.x;
+  const dy = event.clientY - drag.y;
+  if (!suppressClick && Math.hypot(dx, dy) < 4) return;
+  suppressClick = true;
+  const bounds = canvas.getBoundingClientRect();
+  camera.pan(dx * canvas.width / bounds.width, dy * canvas.height / bounds.height);
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+});
+
+canvas.addEventListener('lostpointercapture', event => {
+  if (drag?.id === event.pointerId) drag = undefined;
+});
 
 canvas.addEventListener('click', event => {
-  const bounds = canvas.getBoundingClientRect();
-  const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
-  const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
+  if (!session || suppressClick) return;
+  const point = canvasPoint(event);
+  if (camera && !renderedView) return;
+  const { x, y } = renderedView ? renderedView.world(point.x, point.y) : point;
+  if (tiledMap && (x < 0 || y < 0 || x >= tiledMap.width || y >= tiledMap.height)) return;
   const target = drawnEntities.findLast(({ position, sprite }) => Math.hypot(x - position.x, y - position.y) <= sprite.radius);
   if (target) {
     if (event.shiftKey) {
@@ -148,6 +213,7 @@ function draw(time) {
   const tick = session.current_tick();
   if (tick !== renderTick) {
     renderEntities = session.render_snapshot();
+    if (tiledMap) walls = session.wall_snapshot();
     renderTick = tick;
   }
   const alpha = session.interpolation_alpha();
@@ -156,14 +222,29 @@ function draw(time) {
     sprite,
     position: {
       // A wrap across the scene edge should not sweep through the canvas.
-      x: Math.abs(position.x - previous.x) > canvas.width / 2
+      x: !tiledMap && Math.abs(position.x - previous.x) > sceneWidth / 2
         ? position.x
         : previous.x + (position.x - previous.x) * alpha,
       y: previous.y + (position.y - previous.y) * alpha,
     },
   }));
 
+  if (camera) {
+    const bounds = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(bounds.width * devicePixelRatio));
+    const height = Math.max(1, Math.round(bounds.height * devicePixelRatio));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    camera.resize(width, height);
+  }
+  context.resetTransform();
   context.clearRect(0, 0, canvas.width, canvas.height);
+  if (camera) {
+    renderedView = Object.assign(new Camera(tiledMap), camera);
+    context.imageSmoothingEnabled = false;
+    drawTiled(context, tiledMap, walls, camera);
+    context.setTransform(camera.scale, 0, 0, camera.scale, camera.x, camera.y);
+  }
   for (const { id, position, sprite } of drawnEntities) {
     context.fillStyle = sprite.color;
     context.beginPath();
@@ -171,6 +252,7 @@ function draw(time) {
     context.fill();
     if (selectedIds.has(id)) {
       context.strokeStyle = '#ffffff';
+      context.lineWidth = camera ? devicePixelRatio / camera.scale : 1;
       context.stroke();
     }
   }
@@ -194,10 +276,34 @@ form.addEventListener('submit', async event => {
     ];
     await init();
     const layers = await Promise.all(files.map(loadLayer));
-    const next = new Session(layers);
+    const selectedLayer = layers[base.layers.length];
+    let reference;
+    try {
+      reference = tiled_reference(selectedLayer.text);
+      if (reference) reference = relativeResource(selectedLayer.name, reference);
+    } catch (error) {
+      throw new Error(`${selectedLayer.name}: ${error.message}`);
+    }
+    const nextMap = reference ? await loadTiled(reference, loadLayer, loadImage) : undefined;
+    let next;
+    try {
+      next = new Session(layers, nextMap?.grid);
+    } catch (error) {
+      throw new Error(`${selectedLayer.name}: ${error.message}`);
+    }
     cancelAnimationFrame(frame);
     session?.free();
     session = next;
+    tiledMap = nextMap;
+    camera = nextMap ? new Camera(nextMap) : undefined;
+    renderedView = undefined;
+    drag = undefined;
+    suppressClick = false;
+    canvas.classList.toggle('tile-map', Boolean(camera));
+    if (!camera) {
+      canvas.width = sceneWidth;
+      canvas.height = sceneHeight;
+    }
     drawnEntities = [];
     selectedIds.clear();
     renderTick = undefined;

@@ -1,0 +1,8 @@
+placements:
+  - type: CAT
+    position: { x: 80, y: 150 }
+tiled: desert.tmj
+ground:
+  sand: { passable: true, cost: 1 }
+walls:
+  sandstone: { blocking: true, durability: 100 }

@@ -43,3 +43,9 @@ canvas {
 #error {
   color: #ffb7a4;
 }
+
+canvas.tile-map {
+  aspect-ratio: 16 / 9;
+  height: auto;
+  touch-action: none;
+}

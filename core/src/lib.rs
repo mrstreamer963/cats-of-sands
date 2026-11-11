@@ -7,6 +7,7 @@ mod formation;
 mod observers;
 mod sim_id;
 mod systems;
+mod tile_map;
 
 pub use components::{Position, Sprite};
 pub use config::Layer;
@@ -17,8 +18,9 @@ use bevy_ecs::prelude::*;
 use components::{MoveTarget, PreparedComponent, Speed, Velocity};
 use observers::{Clicked, apply_click_color};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use systems::move_entities;
+use tile_map::{Grid, Route, TileMap};
 use wasm_bindgen::prelude::*;
 
 const TICKS_PER_SECOND: i64 = 60;
@@ -40,6 +42,7 @@ pub struct EntitySnapshot<'a> {
 
 pub enum Command {
     Click { id: SimId },
+    DamageWall { column: u32, row: u32, damage: u32 },
     MoveTo { id: SimId, point: Position },
     MoveGroupTo { ids: Vec<SimId>, point: Position },
 }
@@ -67,11 +70,20 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn from_layers(layers: &[Layer]) -> Result<Self, String> {
-        config::load(layers).map(Self::from_config)
+        Self::from_config(config::load(layers)?, None)
     }
 
-    fn from_config(config: config::LoadedConfig) -> Self {
+    fn from_config(config: config::LoadedConfig, grid: Option<Grid>) -> Result<Self, String> {
+        if config.tiled.is_some() != grid.is_some() {
+            return Err("Параметр tiled и описание сетки должны передаваться вместе".into());
+        }
         let mut world = World::new();
+        if let Some(grid) = grid {
+            let map = TileMap::load(&mut world, grid, &config.ground, &config.walls).map_err(
+                |error| format!("{}: {error}", config.tiled.as_deref().unwrap_or("tiled")),
+            )?;
+            world.insert_resource(map);
+        }
         world.init_resource::<SimEvents>();
         world.add_observer(apply_click_color);
         let mut schedule = Schedule::default();
@@ -85,12 +97,12 @@ impl Simulation {
             tick: 0,
             commands: BTreeMap::new(),
         };
-        for (type_name, position) in config.placements {
+        for (index, (type_name, position)) in config.placements.into_iter().enumerate() {
             simulation
                 .spawn_with_position(&type_name, position.as_ref())
-                .expect("initial type must be spawnable");
+                .map_err(|error| format!("placements[{index}]: {error}"))?;
         }
-        simulation
+        Ok(simulation)
     }
 
     /// Creates an independent instance from a YAML type.
@@ -126,8 +138,29 @@ impl Simulation {
                 ..Velocity::ZERO
             });
         }
-        self.entities
-            .insert(id, (entity.id(), type_name.to_owned()));
+        let entity = entity.id();
+        if let Some(map) = self.world.get_resource::<TileMap>() {
+            let valid = self
+                .world
+                .get::<Position>(entity)
+                .and_then(|position| map.cell(position))
+                .is_some_and(|cell| map.cost(&self.world, cell).is_some());
+            if !valid {
+                self.world.despawn(entity);
+                return Err(format!("{type_name}: позиция вне проходимой части карты"));
+            }
+            let target = self
+                .world
+                .get::<Velocity>(entity)
+                .filter(|velocity| velocity.x.raw() > 0)
+                .and_then(|_| map.drift_target(&self.world, self.world.get::<Position>(entity)?));
+            let mut entity = self.world.entity_mut(entity);
+            entity.insert(Velocity::ZERO);
+            if let Some(target) = target {
+                entity.insert(MoveTarget(target));
+            }
+        }
+        self.entities.insert(id, (entity, type_name.to_owned()));
         self.last_id = next;
         Ok(id)
     }
@@ -167,6 +200,17 @@ impl Simulation {
                             });
                         }
                     }
+                    Command::DamageWall {
+                        column,
+                        row,
+                        damage,
+                    } => {
+                        if self.world.contains_resource::<TileMap>() {
+                            self.world.resource_scope(|world, mut map: Mut<TileMap>| {
+                                map.damage_wall(world, column as usize, row as usize, damage);
+                            });
+                        }
+                    }
                     Command::MoveTo { id, point } => {
                         if let Some(entity) = self.movable_entity(id) {
                             self.set_move_target(entity, point);
@@ -175,8 +219,31 @@ impl Simulation {
                     Command::MoveGroupTo { ids, point } => self.move_group_to(ids, point),
                 }
             }
+            self.refresh_routes();
             self.schedule.run(&mut self.world);
             self.tick = next_tick;
+        }
+    }
+
+    fn refresh_routes(&mut self) {
+        if !self.world.contains_resource::<TileMap>() {
+            return;
+        }
+        let mut query = self.world.query::<(Entity, &MoveTarget, &Route)>();
+        let map = self.world.resource::<TileMap>();
+        let blocked: Vec<_> = query
+            .iter(&self.world)
+            .filter(|(_, target, route)| {
+                std::iter::once(&target.0).chain(&route.0).any(|point| {
+                    map.cell(point)
+                        .and_then(|cell| map.cost(&self.world, cell))
+                        .is_none()
+                })
+            })
+            .map(|(entity, target, route)| (entity, route.0.back().unwrap_or(&target.0).clone()))
+            .collect();
+        for (entity, goal) in blocked {
+            self.set_move_target(entity, goal);
         }
     }
 
@@ -188,7 +255,28 @@ impl Simulation {
     }
 
     fn set_move_target(&mut self, entity: Entity, point: Position) {
-        self.world.entity_mut(entity).insert(MoveTarget(point));
+        let Some(map) = self.world.get_resource::<TileMap>() else {
+            self.world.entity_mut(entity).insert(MoveTarget(point));
+            return;
+        };
+        let start = self
+            .world
+            .get::<Position>(entity)
+            .expect("movable entity has position");
+        let route = map.route(&self.world, start, &point);
+        self.set_route(entity, route);
+    }
+
+    fn set_route(&mut self, entity: Entity, route: Option<VecDeque<Position>>) {
+        let mut entity = self.world.entity_mut(entity);
+        if let Some(mut route) = route
+            && let Some(next) = route.pop_front()
+        {
+            entity.insert((MoveTarget(next), Route(route)));
+        } else {
+            entity.remove::<(MoveTarget, Route)>();
+            entity.insert(Velocity::ZERO);
+        }
     }
 
     fn move_group_to(&mut self, mut ids: Vec<SimId>, point: Position) {
@@ -209,9 +297,44 @@ impl Simulation {
                     })
                     .max()
                     .unwrap_or(Fixed::from_int(0));
-                let destinations = formation::destinations(point, members.len(), radius);
+                let dimensions = self
+                    .world
+                    .get_resource::<TileMap>()
+                    .map_or((SCENE_WIDTH, SCENE_HEIGHT), TileMap::dimensions);
+                let destinations =
+                    formation::destinations(point, members.len(), radius, dimensions);
+                let Some(map) = self.world.get_resource::<TileMap>() else {
+                    for (entity, destination) in members.into_iter().zip(destinations) {
+                        self.set_move_target(entity, destination);
+                    }
+                    return;
+                };
+                let regions = map.regions(&self.world);
+                let mut assigned = BTreeSet::new();
                 for (entity, destination) in members.into_iter().zip(destinations) {
-                    self.set_move_target(entity, destination);
+                    let map = self.world.resource::<TileMap>();
+                    let start = self
+                        .world
+                        .get::<Position>(entity)
+                        .expect("movable entity has position");
+                    let route = map
+                        .cell(start)
+                        .and_then(|cell| regions[cell])
+                        .and_then(|region| {
+                            let preferred = map
+                                .cell(&destination)
+                                .filter(|&cell| regions[cell] == Some(region))
+                                .filter(|_| !assigned.contains(&(destination.x, destination.y)));
+                            let goal = if preferred.is_some() {
+                                destination
+                            } else {
+                                map.closest_free_center(&regions, region, &destination, &assigned)?
+                            };
+                            let route = map.route(&self.world, start, &goal)?;
+                            assigned.insert((goal.x, goal.y));
+                            Some(route)
+                        });
+                    self.set_route(entity, route);
                 }
             }
         }
@@ -245,9 +368,12 @@ pub struct Session {
 #[wasm_bindgen]
 impl Session {
     #[wasm_bindgen(constructor)]
-    pub fn new(layers: JsValue) -> Result<Session, JsError> {
+    pub fn new(layers: JsValue, grid: JsValue) -> Result<Session, JsError> {
         let layers: Vec<Layer> = serde_wasm_bindgen::from_value(layers)?;
-        let simulation = Simulation::from_layers(&layers).map_err(|error| JsError::new(&error))?;
+        let grid: Option<Grid> = serde_wasm_bindgen::from_value(grid)?;
+        let config = config::load(&layers).map_err(|error| JsError::new(&error))?;
+        let simulation =
+            Simulation::from_config(config, grid).map_err(|error| JsError::new(&error))?;
         Ok(Self {
             simulation,
             accumulator: 0.0,
@@ -341,6 +467,31 @@ impl Session {
             .map_err(|error| JsError::new(&error))
     }
 
+    pub fn wall_snapshot(&self) -> Result<JsValue, JsError> {
+        let walls: Vec<_> = self
+            .simulation
+            .world
+            .get_resource::<TileMap>()
+            .into_iter()
+            .flat_map(TileMap::wall_tiles)
+            .collect();
+        Ok(serde_wasm_bindgen::to_value(&walls)?)
+    }
+
+    /// Queues damage to the wall at this cell for the next tick.
+    pub fn damage_wall(&mut self, column: u32, row: u32, damage: u32) {
+        self.simulation
+            .submit_command(
+                self.current_tick(),
+                Command::DamageWall {
+                    column,
+                    row,
+                    damage,
+                },
+            )
+            .expect("the next tick accepts commands");
+    }
+
     /// Queues a movement order for the next tick.
     pub fn move_to(&mut self, id: u32, x: f64, y: f64) -> Result<(), JsError> {
         self.simulation
@@ -383,6 +534,25 @@ impl Session {
             serde_wasm_bindgen::Serializer::new().serialize_large_number_types_as_bigints(true);
         Ok(self.simulation.drain_events().serialize(&serializer)?)
     }
+}
+
+#[wasm_bindgen]
+pub fn tiled_reference(text: &str) -> Result<Option<String>, JsError> {
+    #[derive(serde::Deserialize)]
+    struct MapReference {
+        tiled: Option<String>,
+    }
+
+    let map: MapReference =
+        serde_yaml_ng::from_str(text).map_err(|error| JsError::new(&error.to_string()))?;
+    if map
+        .tiled
+        .as_ref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        return Err(JsError::new("tiled: ожидается путь к карте"));
+    }
+    Ok(map.tiled)
 }
 
 fn movement_point(x: f64, y: f64) -> Result<Position, JsError> {

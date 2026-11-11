@@ -1,4 +1,5 @@
 use crate::components::{self, PreparedComponent, Registry};
+use crate::tile_map::{Ground, Wall};
 use serde::Deserialize;
 use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeMap;
@@ -15,6 +16,11 @@ struct Config {
     entities: Option<BTreeMap<String, EntityConfig>>,
     units: Option<BTreeMap<String, EntityConfig>>,
     placements: Option<Vec<Placement>>,
+    tiled: Option<String>,
+    #[serde(default)]
+    ground: BTreeMap<String, Ground>,
+    #[serde(default)]
+    walls: BTreeMap<String, Wall>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +32,9 @@ struct Placement {
 }
 
 pub(crate) struct LoadedConfig {
+    pub tiled: Option<String>,
+    pub ground: BTreeMap<String, Ground>,
+    pub walls: BTreeMap<String, Wall>,
     pub types: BTreeMap<String, Vec<PreparedComponent>>,
     pub placements: Vec<(String, Option<PreparedComponent>)>,
 }
@@ -68,6 +77,18 @@ pub fn load(layers: &[Layer]) -> Result<LoadedConfig, String> {
 
     let config: Config = serde_path_to_error::deserialize(merged)
         .map_err(|error| format!("{}: {}", error.path(), error.inner()))?;
+    for (name, ground) in &config.ground {
+        if ground.cost == 0 {
+            return Err(format!("ground.{name}.cost: ожидается положительное число"));
+        }
+    }
+    for (name, wall) in &config.walls {
+        if wall.durability == 0 {
+            return Err(format!(
+                "walls.{name}.durability: ожидается положительное число"
+            ));
+        }
+    }
     let (section, definitions) = match (config.entities, config.units) {
         (Some(entities), None) if config.placements.is_none() => ("entities", entities),
         (None, Some(units)) => ("units", units),
@@ -102,7 +123,13 @@ pub fn load(layers: &[Layer]) -> Result<LoadedConfig, String> {
             })
             .collect::<Result<Vec<_>, String>>()?
     };
-    Ok(LoadedConfig { types, placements })
+    Ok(LoadedConfig {
+        types,
+        placements,
+        tiled: config.tiled,
+        ground: config.ground,
+        walls: config.walls,
+    })
 }
 
 fn merge_type_section(merged: &mut Value, section: &str, value: &mut Value) -> Result<(), String> {
@@ -276,7 +303,7 @@ pub(crate) mod tests {
         let [units, scene] = shipped_scene();
         let config = load(&[units, scene, shipped_addon()]).unwrap();
         assert_eq!(config.types.len(), 2);
-        let session = crate::Simulation::from_config(config);
+        let session = crate::Simulation::from_config(config, None).unwrap();
         let cat = session.entities[&SimId(1)].0;
         let position = session.world.get::<Position>(cat).unwrap();
         assert_eq!(position.x, Fixed::from_int(80));
@@ -384,7 +411,7 @@ pub(crate) mod tests {
             "entities: [{override: cat, Sprite: {color: '#ff0000'}}]",
         );
         let entities = load(&[scene, addon]).unwrap();
-        let session = crate::Simulation::from_config(entities);
+        let session = crate::Simulation::from_config(entities, None).unwrap();
         let cat = session.entities[&SimId(1)].0;
         let sprite = session.world.get::<Sprite>(cat).unwrap();
         let position = session.world.get::<Position>(cat).unwrap();
@@ -460,7 +487,7 @@ pub(crate) mod tests {
         );
         let config = load(&[base(), addon]).unwrap();
         assert_eq!(config.types.len(), 1);
-        let session = crate::Simulation::from_config(config);
+        let session = crate::Simulation::from_config(config, None).unwrap();
         let cat = session.entities[&SimId(1)].0;
         let snapshot = session.snapshot();
         assert_eq!(snapshot.len(), 1);

@@ -1,24 +1,17 @@
-use crate::{Fixed, Position, SCENE_HEIGHT, SCENE_WIDTH};
+use crate::{Fixed, Position};
 
 pub(crate) fn destinations(
     point: Position,
     count: usize,
     radius: Fixed,
+    (width, height): (Fixed, Fixed),
 ) -> impl Iterator<Item = Position> {
     let columns = (count - 1).isqrt() + 1;
     let rows = count.div_ceil(columns);
     let radius = i128::from(radius.raw());
     let spacing = 2 * radius + i128::from(Fixed::from_int(8).raw());
-    let center_x = fit_axis(
-        point.x,
-        SCENE_WIDTH,
-        radius + (columns - 1) as i128 * spacing / 2,
-    );
-    let center_y = fit_axis(
-        point.y,
-        SCENE_HEIGHT,
-        radius + (rows - 1) as i128 * spacing / 2,
-    );
+    let center_x = fit_axis(point.x, width, radius + (columns - 1) as i128 * spacing / 2);
+    let center_y = fit_axis(point.y, height, radius + (rows - 1) as i128 * spacing / 2);
 
     (0..count).map(move |index| {
         let row = index / columns;

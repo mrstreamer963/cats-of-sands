@@ -38,6 +38,13 @@ impl Fixed {
         Self(sum.rem_euclid(i128::from(period.0)) as i64)
     }
 
+    pub(crate) fn distance_2d((x, y): (Self, Self), (target_x, target_y): (Self, Self)) -> i128 {
+        wide_distance(
+            i128::from(target_x.0) - i128::from(x.0),
+            i128::from(target_y.0) - i128::from(y.0),
+        )
+    }
+
     /// Advances a point toward its destination using wide intermediates.
     pub(crate) fn step_towards_2d(
         (x, y): (Self, Self),
