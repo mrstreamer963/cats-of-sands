@@ -3,6 +3,7 @@
 mod components;
 mod config;
 mod fixed;
+mod formation;
 mod observers;
 mod sim_id;
 mod systems;
@@ -13,7 +14,7 @@ pub use fixed::Fixed;
 pub use sim_id::SimId;
 
 use bevy_ecs::prelude::*;
-use components::PreparedComponent;
+use components::{MoveTarget, PreparedComponent, Speed, Velocity};
 use observers::{Clicked, apply_click_color};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -21,6 +22,8 @@ use systems::move_entities;
 use wasm_bindgen::prelude::*;
 
 const TICKS_PER_SECOND: i64 = 60;
+const SCENE_WIDTH: Fixed = Fixed::from_int(640);
+const SCENE_HEIGHT: Fixed = Fixed::from_int(360);
 const STEP: f64 = 1.0 / TICKS_PER_SECOND as f64;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 
@@ -37,6 +40,8 @@ pub struct EntitySnapshot<'a> {
 
 pub enum Command {
     Click { id: SimId },
+    MoveTo { id: SimId, point: Position },
+    MoveGroupTo { ids: Vec<SimId>, point: Position },
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -114,6 +119,13 @@ impl Simulation {
         if let Some(insert) = position {
             insert(&mut entity);
         }
+        if let Some(speed) = entity.get::<Speed>() {
+            let x = speed.0.div_int(TICKS_PER_SECOND);
+            entity.insert(Velocity {
+                x,
+                ..Velocity::ZERO
+            });
+        }
         self.entities
             .insert(id, (entity.id(), type_name.to_owned()));
         self.last_id = next;
@@ -155,10 +167,53 @@ impl Simulation {
                             });
                         }
                     }
+                    Command::MoveTo { id, point } => {
+                        if let Some(entity) = self.movable_entity(id) {
+                            self.set_move_target(entity, point);
+                        }
+                    }
+                    Command::MoveGroupTo { ids, point } => self.move_group_to(ids, point),
                 }
             }
             self.schedule.run(&mut self.world);
             self.tick = next_tick;
+        }
+    }
+
+    fn movable_entity(&self, id: SimId) -> Option<Entity> {
+        let &(entity, _) = self.entities.get(&id)?;
+        self.world.get::<Position>(entity)?;
+        let speed = self.world.get::<Speed>(entity)?;
+        (speed.0.raw() >= TICKS_PER_SECOND).then_some(entity)
+    }
+
+    fn set_move_target(&mut self, entity: Entity, point: Position) {
+        self.world.entity_mut(entity).insert(MoveTarget(point));
+    }
+
+    fn move_group_to(&mut self, mut ids: Vec<SimId>, point: Position) {
+        ids.sort_unstable();
+        ids.dedup();
+        let members: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| self.movable_entity(id))
+            .collect();
+        match members.as_slice() {
+            [] => {}
+            &[entity] => self.set_move_target(entity, point),
+            _ => {
+                let radius = members
+                    .iter()
+                    .filter_map(|&entity| {
+                        self.world.get::<Sprite>(entity).map(|sprite| sprite.radius)
+                    })
+                    .max()
+                    .unwrap_or(Fixed::from_int(0));
+                let destinations = formation::destinations(point, members.len(), radius);
+                for (entity, destination) in members.into_iter().zip(destinations) {
+                    self.set_move_target(entity, destination);
+                }
+            }
         }
     }
 
@@ -286,6 +341,32 @@ impl Session {
             .map_err(|error| JsError::new(&error))
     }
 
+    /// Queues a movement order for the next tick.
+    pub fn move_to(&mut self, id: u32, x: f64, y: f64) -> Result<(), JsError> {
+        self.simulation
+            .submit_command(
+                self.current_tick(),
+                Command::MoveTo {
+                    id: SimId(id),
+                    point: movement_point(x, y)?,
+                },
+            )
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Queues one movement order for all selected instances.
+    pub fn move_group_to(&mut self, ids: Vec<u32>, x: f64, y: f64) -> Result<(), JsError> {
+        self.simulation
+            .submit_command(
+                self.current_tick(),
+                Command::MoveGroupTo {
+                    ids: ids.into_iter().map(SimId).collect(),
+                    point: movement_point(x, y)?,
+                },
+            )
+            .map_err(|error| JsError::new(&error))
+    }
+
     pub fn spawn(&mut self, type_name: &str) -> Result<u32, JsError> {
         self.simulation
             .spawn(type_name)
@@ -304,10 +385,132 @@ impl Session {
     }
 }
 
+fn movement_point(x: f64, y: f64) -> Result<Position, JsError> {
+    Ok(Position {
+        x: Fixed::try_from_f64(x).ok_or_else(|| JsError::new("Некорректная координата x"))?,
+        y: Fixed::try_from_f64(y).ok_or_else(|| JsError::new("Некорректная координата y"))?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::components::ClickColor;
+
+    #[test]
+    fn group_order_assigns_distinct_places_inside_the_scene_in_id_order() {
+        let layer = config::tests::layer(
+            "group.yaml",
+            "units:
+  - type: CAT
+    Speed: 60
+    Sprite: { radius: 18, color: '#ffffff' }
+  - type: FAST
+    Speed: 120
+    Sprite: { radius: 10, color: '#ffffff' }
+placements:
+  - { type: CAT, position: { x: 100, y: 18 } }
+  - { type: FAST, position: { x: 100, y: 18 } }",
+        );
+        let mut simulation = Simulation::from_layers(&[layer]).unwrap();
+        let [first, second] = [SimId(1), SimId(2)];
+        let point = |x, y| Position {
+            x: Fixed::from_int(x),
+            y: Fixed::from_int(y),
+        };
+        let assert_positions = |simulation: &Simulation, expected: [(i32, i32); 2]| {
+            for (entity, (x, y)) in simulation.snapshot().iter().zip(expected) {
+                let position = entity.position.unwrap();
+                assert_eq!(
+                    (position.x, position.y),
+                    (Fixed::from_int(x), Fixed::from_int(y))
+                );
+            }
+        };
+
+        simulation
+            .submit_command(
+                0,
+                Command::MoveGroupTo {
+                    ids: vec![second, SimId(99), first, second],
+                    point: point(1, 1),
+                },
+            )
+            .unwrap();
+        simulation.step(1);
+        assert_positions(&simulation, [(99, 18), (98, 18)]);
+        simulation.step(100);
+        assert_positions(&simulation, [(18, 18), (62, 18)]);
+
+        simulation
+            .submit_command(
+                simulation.current_tick(),
+                Command::MoveGroupTo {
+                    ids: vec![second],
+                    point: point(70, 18),
+                },
+            )
+            .unwrap();
+        simulation.step(10);
+        assert_positions(&simulation, [(18, 18), (70, 18)]);
+    }
+
+    #[test]
+    fn move_order_replaces_the_target_and_stops_on_arrival() {
+        let mut simulation = Simulation::from_layers(&config::tests::shipped_scene()).unwrap();
+        let id = simulation.snapshot()[0].id;
+        let point = |x, y| Position {
+            x: Fixed::from_int(x),
+            y: Fixed::from_int(y),
+        };
+        simulation
+            .submit_command(
+                0,
+                Command::MoveTo {
+                    id,
+                    point: point(80, 155),
+                },
+            )
+            .unwrap();
+        simulation.step(1);
+        let snapshot = simulation.snapshot();
+        let position = snapshot[0].position.unwrap();
+        assert_eq!(
+            (position.x, position.y),
+            (Fixed::from_int(80), Fixed::from_int(151))
+        );
+
+        simulation
+            .submit_command(
+                1,
+                Command::MoveTo {
+                    id,
+                    point: point(83, 155),
+                },
+            )
+            .unwrap();
+        simulation.step(10);
+        let snapshot = simulation.snapshot();
+        let position = snapshot[0].position.unwrap();
+        assert_eq!(
+            (position.x, position.y),
+            (Fixed::from_int(83), Fixed::from_int(155))
+        );
+        assert!(
+            simulation
+                .world
+                .get::<MoveTarget>(simulation.entities[&id].0)
+                .is_none()
+        );
+        let velocity = simulation
+            .world
+            .get::<Velocity>(simulation.entities[&id].0)
+            .unwrap();
+        assert_eq!(
+            (velocity.x, velocity.y),
+            (Velocity::ZERO.x, Velocity::ZERO.y)
+        );
+    }
 
     #[test]
     fn equal_steps_give_equal_positions_across_frame_rates() {

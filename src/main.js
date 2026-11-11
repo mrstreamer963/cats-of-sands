@@ -118,6 +118,7 @@ let previousTime;
 let renderTick;
 let renderEntities = [];
 let drawnEntities = [];
+const selectedIds = new Set();
 
 canvas.addEventListener('click', event => {
   const bounds = canvas.getBoundingClientRect();
@@ -125,7 +126,15 @@ canvas.addEventListener('click', event => {
   const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
   const target = drawnEntities.findLast(({ position, sprite }) => Math.hypot(x - position.x, y - position.y) <= sprite.radius);
   if (target) {
-    session.click(target.id);
+    if (event.shiftKey) {
+      if (!selectedIds.delete(target.id)) selectedIds.add(target.id);
+    } else {
+      selectedIds.clear();
+      selectedIds.add(target.id);
+      session.click(target.id);
+    }
+  } else if (selectedIds.size > 0) {
+    session.move_group_to(Uint32Array.from(selectedIds), x, y);
   }
 });
 
@@ -155,11 +164,15 @@ function draw(time) {
   }));
 
   context.clearRect(0, 0, canvas.width, canvas.height);
-  for (const { position, sprite } of drawnEntities) {
+  for (const { id, position, sprite } of drawnEntities) {
     context.fillStyle = sprite.color;
     context.beginPath();
     context.arc(position.x, position.y, sprite.radius, 0, Math.PI * 2);
     context.fill();
+    if (selectedIds.has(id)) {
+      context.strokeStyle = '#ffffff';
+      context.stroke();
+    }
   }
   frame = requestAnimationFrame(draw);
 }
@@ -186,6 +199,7 @@ form.addEventListener('submit', async event => {
     session?.free();
     session = next;
     drawnEntities = [];
+    selectedIds.clear();
     renderTick = undefined;
     previousTime = undefined;
     canvas.hidden = false;

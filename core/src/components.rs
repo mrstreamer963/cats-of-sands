@@ -1,12 +1,16 @@
 mod click_color;
+mod move_target;
 mod position;
 mod speed;
 mod sprite;
+mod velocity;
 
 pub(crate) use click_color::ClickColor;
+pub(crate) use move_target::MoveTarget;
 pub use position::Position;
 pub(crate) use speed::Speed;
 pub use sprite::Sprite;
+pub(crate) use velocity::Velocity;
 
 use bevy_ecs::prelude::*;
 use serde::Serializer;
