@@ -1,14 +1,14 @@
 :root {
   color-scheme: dark;
   font: 1rem system-ui, sans-serif;
-  background: #211912;
+  background: #1b1510;
   color: #fff3df;
 }
 
 main {
-  max-width: 40rem;
-  margin: 2rem auto;
-  padding: 0 1rem;
+  max-width: 78rem;
+  margin: clamp(2rem, 8vh, 6rem) auto;
+  padding: 0 clamp(1rem, 4vw, 3rem);
 }
 
 fieldset {
@@ -31,6 +31,154 @@ select {
 button {
   font: inherit;
   padding: 0.4rem 0.8rem;
+}
+
+.launch-layout {
+  display: grid;
+  grid-template-columns: minmax(15rem, 1fr) minmax(0, 1.85fr);
+  align-items: center;
+  gap: clamp(2rem, 6vw, 6rem);
+  padding: clamp(1.25rem, 4vw, 3.5rem);
+  border: 1px solid #59422f;
+  border-radius: 1.5rem;
+  background: linear-gradient(135deg, #302218, #211912 65%);
+}
+
+.launch-settings h1 {
+  margin: 0 0 1.75rem;
+  color: #ffefd7;
+  font: 600 clamp(3rem, 5.4vw, 5.5rem)/0.94 Georgia, serif;
+  letter-spacing: -0.055em;
+}
+
+.launch-settings h1 span {
+  display: block;
+}
+
+#launch {
+  display: grid;
+  gap: 1.15rem;
+}
+
+#launch label[for="map"],
+#launch legend {
+  padding: 0;
+  color: #d9b99a;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+#launch fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#launch select,
+#addons label {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0.45rem 0 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #6b513a;
+  border-radius: 0.55rem;
+  background: #231a13;
+  color: #fff3df;
+}
+
+#addons label {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  cursor: pointer;
+}
+
+#addons input {
+  margin: 0;
+  accent-color: #ecc18b;
+}
+
+#launch button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 0.55rem;
+  background: #ecc18b;
+  color: #2c1a0d;
+  font-weight: 750;
+}
+
+#launch button:enabled {
+  cursor: pointer;
+}
+
+#launch button:enabled:hover {
+  background: #ffdaa9;
+}
+
+#launch button:disabled {
+  opacity: 0.55;
+}
+
+#launch :focus-visible {
+  outline: 2px solid #ffdaa9;
+  outline-offset: 3px;
+}
+
+.map-preview {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid #6b513a;
+  border-radius: 0.9rem;
+  background: #211912;
+}
+
+.map-preview-image {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 12 / 7;
+  background: radial-gradient(ellipse at top, #58412e, #302218);
+}
+
+#map-preview {
+  margin: 0;
+  background: transparent;
+  image-rendering: pixelated;
+}
+
+#map-preview-status {
+  margin: 1rem;
+  color: #ebd5ba;
+  text-align: center;
+}
+
+.map-preview figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  padding: 0.8rem 1rem;
+  color: #d9b99a;
+  font-size: 0.88rem;
+}
+
+#map-preview-name {
+  color: #fff3df;
+  font-weight: 650;
+}
+
+@media (max-width: 46rem) {
+  .launch-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .launch-settings h1 span {
+    display: inline;
+  }
 }
 
 canvas {

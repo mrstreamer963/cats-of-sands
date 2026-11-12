@@ -8,17 +8,30 @@
   <body>
     <main>
       <section id="launch-screen">
-        <h1>Cats of Sands</h1>
-        <form id="launch">
-          <label for="map">Карта</label>
-          <select id="map" name="map" required disabled></select>
-          <fieldset>
-            <legend>Аддоны</legend>
-            <div id="addons"></div>
-          </fieldset>
-          <button type="submit" disabled>Запустить</button>
-        </form>
-        <p id="error" role="alert" hidden></p>
+        <div class="launch-layout">
+          <div class="launch-settings">
+            <h1>Cats of <span>Sands</span></h1>
+            <form id="launch">
+              <div class="map-field">
+                <label for="map">Карта</label>
+                <select id="map" name="map" required disabled></select>
+              </div>
+              <fieldset>
+                <legend>Аддоны</legend>
+                <div id="addons"></div>
+              </fieldset>
+              <button type="submit" disabled>Запустить игру <span aria-hidden="true">→</span></button>
+            </form>
+            <p id="error" role="alert" hidden></p>
+          </div>
+          <figure class="map-preview">
+            <div class="map-preview-image">
+              <canvas id="map-preview" width="960" height="560" aria-label="Вид карты сверху" hidden></canvas>
+              <p id="map-preview-status" role="status">Загрузка карты…</p>
+            </div>
+            <figcaption>Превью карты <span id="map-preview-name"></span></figcaption>
+          </figure>
+        </div>
       </section>
       <section id="game" aria-label="Игра" hidden>
         <canvas width="640" height="360" aria-label="Игровая карта" tabindex="0"></canvas>
