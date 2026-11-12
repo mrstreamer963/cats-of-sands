@@ -9,6 +9,9 @@ const game = document.querySelector('#game');
 const canvas = game.querySelector('canvas');
 const overlay = document.querySelector('#game-overlay');
 const pauseMenu = document.querySelector('#pause-menu');
+const settingsMenu = document.querySelector('#settings-menu');
+const openSettings = document.querySelector('#open-settings');
+const showPlannedPaths = document.querySelector('#show-planned-paths');
 const loadMenu = document.querySelector('#load-menu');
 const confirmMenu = document.querySelector('#confirm-menu');
 const confirmMessage = document.querySelector('#confirm-message');
@@ -20,7 +23,13 @@ let gameState = 'menu';
 let confirmationAction;
 let confirmationReturnState = 'paused';
 let pendingImport;
-const runtime = createGame(canvas, () => gameState === 'playing');
+const plannedPathsKey = 'cats-of-sands.show-planned-paths';
+try {
+  showPlannedPaths.checked = localStorage.getItem(plannedPathsKey) === 'true';
+} catch {
+  // The checkbox still works for the current page if storage is unavailable.
+}
+const runtime = createGame(canvas, () => gameState === 'playing', () => showPlannedPaths.checked);
 
 function showGameState(next) {
   gameState = next;
@@ -31,6 +40,7 @@ function showGameState(next) {
   canvas.inert = next !== 'playing';
   overlay.hidden = !inGame || next === 'playing';
   pauseMenu.hidden = next !== 'paused';
+  settingsMenu.hidden = next !== 'settings';
   loadMenu.hidden = next !== 'loading-file';
   confirmMenu.hidden = !next.startsWith('confirm-');
 }
@@ -47,6 +57,11 @@ function resumeGame() {
   runtime.resetInput();
   showGameState('playing');
   canvas.focus();
+}
+
+function closeSettings() {
+  showGameState('paused');
+  openSettings.focus();
 }
 
 function askConfirmation({ title, message, action, returnState = 'paused', confirmState = 'confirm-exit' }) {
@@ -131,6 +146,8 @@ document.addEventListener('keydown', event => {
     pauseGame();
   } else if (gameState === 'paused') {
     resumeGame();
+  } else if (gameState === 'settings') {
+    closeSettings();
   } else if (gameState === 'loading-file') {
     showGameState('paused');
     document.querySelector('#open-load').focus();
@@ -140,6 +157,18 @@ document.addEventListener('keydown', event => {
 });
 
 document.querySelector('#resume').addEventListener('click', resumeGame);
+openSettings.addEventListener('click', () => {
+  showGameState('settings');
+  showPlannedPaths.focus();
+});
+document.querySelector('#close-settings').addEventListener('click', closeSettings);
+showPlannedPaths.addEventListener('change', () => {
+  try {
+    localStorage.setItem(plannedPathsKey, String(showPlannedPaths.checked));
+  } catch {
+    // Keep the current page's choice if storage is unavailable.
+  }
+});
 document.querySelector('#save-game').addEventListener('click', saveGame);
 document.querySelector('#open-load').addEventListener('click', () => {
   showGameState('loading-file');

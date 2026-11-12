@@ -1,7 +1,7 @@
 import { Camera } from './camera.js';
 import { drawTiled } from './tiled.js';
 
-export function createGame(canvas, isPlaying) {
+export function createGame(canvas, isPlaying, showPlannedPaths) {
   const context = canvas.getContext('2d');
   let session;
   let frame;
@@ -134,9 +134,10 @@ export function createGame(canvas, isPlaying) {
       renderTick = tick;
     }
     const alpha = session.interpolation_alpha();
-    drawnEntities = renderEntities.map(({ id, position, previous_position: previous, sprite }) => ({
+    drawnEntities = renderEntities.map(({ id, position, previous_position: previous, sprite, planned_path }) => ({
       id,
       sprite,
+      plannedPath: planned_path,
       position: {
         // A wrap across the scene edge should not sweep through the canvas.
         x: !tiledMap && Math.abs(position.x - previous.x) > sceneWidth / 2
@@ -168,6 +169,17 @@ export function createGame(canvas, isPlaying) {
       context.imageSmoothingEnabled = false;
       drawTiled(context, tiledMap, walls, camera);
       context.setTransform(camera.scale, 0, 0, camera.scale, camera.x, camera.y);
+    }
+    if (showPlannedPaths()) {
+      context.strokeStyle = '#fff3df';
+      context.lineWidth = camera ? 2 * devicePixelRatio / camera.scale : 2;
+      for (const { id, position, plannedPath } of drawnEntities) {
+        if (!selectedIds.has(id) || !plannedPath?.length) continue;
+        context.beginPath();
+        context.moveTo(position.x, position.y);
+        for (const point of plannedPath) context.lineTo(point.x, point.y);
+        context.stroke();
+      }
     }
     for (const { id, position, sprite } of drawnEntities) {
       context.fillStyle = sprite.color;

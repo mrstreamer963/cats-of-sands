@@ -683,19 +683,31 @@ impl Session {
             position: &'a Position,
             previous_position: &'a Position,
             sprite: &'a Sprite,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            planned_path: Vec<&'a Position>,
         }
 
-        let entities: Vec<_> = self
-            .simulation
-            .snapshot()
-            .into_iter()
-            .filter_map(|entity| {
-                let position = entity.position?;
+        let simulation = &self.simulation;
+        let world = &simulation.world;
+        let entities: Vec<_> = simulation
+            .entities
+            .iter()
+            .filter_map(|(&id, &(entity, _))| {
+                let position = world.get::<Position>(entity)?;
+                let sprite = world.get::<Sprite>(entity)?;
+                let mut planned_path = Vec::new();
+                if let Some(target) = world.get::<MoveTarget>(entity) {
+                    planned_path.push(&target.0);
+                    if let Some(route) = world.get::<Route>(entity) {
+                        planned_path.extend(&route.0);
+                    }
+                }
                 Some(RenderEntity {
-                    id: entity.id,
+                    id,
                     position,
-                    previous_position: self.previous_positions.get(&entity.id).unwrap_or(position),
-                    sprite: entity.sprite?,
+                    previous_position: self.previous_positions.get(&id).unwrap_or(position),
+                    sprite,
+                    planned_path,
                 })
             })
             .collect();
