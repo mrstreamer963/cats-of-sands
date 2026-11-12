@@ -680,6 +680,7 @@ impl Session {
         #[derive(Serialize)]
         struct RenderEntity<'a> {
             id: SimId,
+            type_name: &'a str,
             position: &'a Position,
             previous_position: &'a Position,
             sprite: &'a Sprite,
@@ -692,7 +693,7 @@ impl Session {
         let entities: Vec<_> = simulation
             .entities
             .iter()
-            .filter_map(|(&id, &(entity, _))| {
+            .filter_map(|(&id, &(entity, ref type_name))| {
                 let position = world.get::<Position>(entity)?;
                 let sprite = world.get::<Sprite>(entity)?;
                 let mut planned_path = Vec::new();
@@ -704,6 +705,7 @@ impl Session {
                 }
                 Some(RenderEntity {
                     id,
+                    type_name,
                     position,
                     previous_position: self.previous_positions.get(&id).unwrap_or(position),
                     sprite,

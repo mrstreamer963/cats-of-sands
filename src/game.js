@@ -1,8 +1,16 @@
 import { Camera } from './camera.js';
 import { drawTiled } from './tiled.js';
+import { catFrame, catFrameDuration, catWalkFrameCount, createCatImages, drawCat } from './cat-animation.js';
 
 export function createGame(canvas, isPlaying, showPlannedPaths) {
   const context = canvas.getContext('2d');
+  const catImages = createCatImages();
+  let catImagesReady = false;
+  Promise.all(Object.values(catImages).map(image => image.decode())).then(
+    () => { catImagesReady = true; },
+    () => { /* Draw the unit marker when a sprite is unavailable. */ },
+  );
+  const catAnimations = new Map();
   let session;
   let frame;
   let previousTime;
@@ -42,6 +50,7 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
       canvas.height = sceneHeight;
     }
     drawnEntities = [];
+    catAnimations.clear();
     selectedIds.clear();
     for (const id of presentation.selectedIds ?? []) selectedIds.add(id);
     renderTick = undefined;
@@ -58,6 +67,7 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
     pendingCamera = undefined;
     renderEntities = [];
     drawnEntities = [];
+    catAnimations.clear();
     selectedIds.clear();
   }
 
@@ -106,7 +116,12 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
     if (camera && !renderedView) return;
     const { x, y } = renderedView ? renderedView.world(point.x, point.y) : point;
     if (tiledMap && (x < 0 || y < 0 || x >= tiledMap.width || y >= tiledMap.height)) return;
-    const target = drawnEntities.findLast(({ position, sprite }) => Math.hypot(x - position.x, y - position.y) <= sprite.radius);
+    const target = drawnEntities.findLast(({ position, sprite, cat }) => {
+      const dx = x - position.x;
+      const dy = y - position.y;
+      return Math.hypot(dx, dy) <= sprite.radius
+        || (cat && Math.abs(dx) <= sprite.radius * 0.7 && dy >= cat.offsetY && dy <= 0);
+    });
     if (target) {
       if (event.shiftKey) {
         if (!selectedIds.delete(target.id)) selectedIds.add(target.id);
@@ -121,11 +136,13 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
   });
 
   function draw(time) {
-    if (isPlaying() && previousTime !== undefined) {
-      session.advance((time - previousTime) / 1000);
+    const playing = isPlaying();
+    const elapsed = playing && previousTime !== undefined ? time - previousTime : 0;
+    if (elapsed > 0) {
+      session.advance(elapsed / 1000);
       session.drain_events();
     }
-    previousTime = isPlaying() ? time : undefined;
+    previousTime = playing ? time : undefined;
 
     const tick = session.current_tick();
     if (tick !== renderTick) {
@@ -134,18 +151,38 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
       renderTick = tick;
     }
     const alpha = session.interpolation_alpha();
-    drawnEntities = renderEntities.map(({ id, position, previous_position: previous, sprite, planned_path }) => ({
-      id,
-      sprite,
-      plannedPath: planned_path,
-      position: {
-        // A wrap across the scene edge should not sweep through the canvas.
-        x: !tiledMap && Math.abs(position.x - previous.x) > sceneWidth / 2
-          ? position.x
-          : previous.x + (position.x - previous.x) * alpha,
-        y: previous.y + (position.y - previous.y) * alpha,
-      },
-    }));
+    drawnEntities = renderEntities.map(({ id, type_name, position, previous_position: previous, sprite, planned_path }) => {
+      const dx = position.x - previous.x;
+      const dy = position.y - previous.y;
+      const wrapped = !tiledMap && Math.abs(dx) > sceneWidth / 2;
+      let cat;
+      if (type_name === 'CAT' && catImagesReady) {
+        let animation = catAnimations.get(id);
+        if (!animation) {
+          animation = { row: 0, flip: false, elapsed: 0, moving: false };
+          catAnimations.set(id, animation);
+        }
+        const headingX = wrapped ? dx - Math.sign(dx) * sceneWidth : dx;
+        const moving = headingX !== 0 || dy !== 0;
+        if (moving) {
+          animation.row = Math.abs(headingX) >= Math.abs(dy) ? 2 : Number(dy < 0);
+          animation.flip = animation.row === 2 && headingX < 0;
+        }
+        animation.elapsed = moving && animation.moving
+          ? (animation.elapsed + elapsed) % (catWalkFrameCount * catFrameDuration)
+          : 0;
+        animation.moving = moving;
+        cat = catFrame(catImages, animation, sprite.radius);
+      }
+      return {
+        id, sprite, cat, plannedPath: planned_path,
+        position: {
+          // A wrap across the scene edge should not sweep through the canvas.
+          x: wrapped ? position.x : previous.x + dx * alpha,
+          y: previous.y + dy * alpha,
+        },
+      };
+    }).sort((a, b) => a.position.y - b.position.y);
 
     if (camera) {
       const bounds = canvas.getBoundingClientRect();
@@ -181,16 +218,18 @@ export function createGame(canvas, isPlaying, showPlannedPaths) {
         context.stroke();
       }
     }
-    for (const { id, position, sprite } of drawnEntities) {
+    context.imageSmoothingEnabled = true;
+    for (const { id, position, sprite, cat } of drawnEntities) {
       context.fillStyle = sprite.color;
       context.beginPath();
       context.arc(position.x, position.y, sprite.radius, 0, Math.PI * 2);
-      context.fill();
+      if (!cat) context.fill();
       if (selectedIds.has(id)) {
         context.strokeStyle = '#ffffff';
         context.lineWidth = camera ? devicePixelRatio / camera.scale : 1;
         context.stroke();
       }
+      if (cat) drawCat(context, cat, position.x, position.y);
     }
     frame = requestAnimationFrame(draw);
   }

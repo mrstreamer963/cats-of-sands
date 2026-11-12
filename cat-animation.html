@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Анимация кота · Cats of Sands</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Анимация кота</h1>
+        <a href="./">В игру</a>
+      </header>
+      <div class="controls">
+        <label>Направление
+          <select id="direction">
+            <option value="down">Вниз</option>
+            <option value="up">Вверх</option>
+            <option value="right" selected>Вправо</option>
+            <option value="left">Влево</option>
+          </select>
+        </label>
+        <label>Анимация
+          <select id="mode">
+            <option value="walk">Ходьба</option>
+            <option value="idle">Стойка</option>
+          </select>
+        </label>
+        <label>Скорость
+          <select id="speed">
+            <option value="0.25">¼×</option>
+            <option value="0.5" selected>½×</option>
+            <option value="1">1×</option>
+            <option value="2">2×</option>
+          </select>
+        </label>
+        <label class="toggle"><input type="checkbox" id="anchor" checked> Точка опоры</label>
+      </div>
+      <p id="error" role="alert" hidden></p>
+      <section class="preview" aria-label="Просмотр анимации">
+        <canvas id="preview" width="640" height="350" aria-label="Кот в выбранном ракурсе"></canvas>
+      </section>
+      <div class="playback">
+        <button id="previous" type="button" aria-label="Предыдущий кадр">←</button>
+        <button id="play" type="button">Пауза</button>
+        <button id="next" type="button" aria-label="Следующий кадр">→</button>
+        <output id="status" aria-live="off"></output>
+      </div>
+      <div id="frames" aria-label="Кадры анимации"></div>
+    </main>
+    <script type="module" src="/src/cat-animation-debug.js"></script>
+  </body>
+</html>
