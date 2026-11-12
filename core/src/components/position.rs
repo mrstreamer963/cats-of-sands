@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 
 /// Location of an entity in the simulation.
-#[derive(Clone, Component, Serialize)]
+#[derive(Clone, Component, Serialize, Deserialize)]
 pub struct Position {
     #[serde(serialize_with = "serialize_fixed")]
     pub x: Fixed,

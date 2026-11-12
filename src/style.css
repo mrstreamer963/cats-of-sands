@@ -40,6 +40,89 @@ canvas {
   background: #59412c;
 }
 
+main.in-game {
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+}
+
+#game {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #120e0a;
+}
+
+#game[hidden] {
+  display: none;
+}
+
+#game canvas {
+  display: block;
+  width: 100%;
+  max-height: 100vh;
+  object-fit: contain;
+  margin: 0;
+}
+
+#game canvas.tile-map {
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: auto;
+}
+
+#game-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(16 12 8 / 65%);
+}
+
+#game-overlay[hidden] {
+  display: none;
+}
+
+.menu-panel {
+  width: min(100%, 24rem);
+  padding: 1.5rem;
+  border: 1px solid #8f704e;
+  border-radius: 0.75rem;
+  background: #211912;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 40%);
+}
+
+.menu-panel h2 {
+  margin-top: 0;
+}
+
+.menu-panel button {
+  display: block;
+  width: 100%;
+  margin-top: 0.65rem;
+}
+
+#save-file {
+  display: block;
+  max-width: 100%;
+  margin-block: 0.5rem 1rem;
+}
+
+#game-error {
+  position: fixed;
+  inset: auto 1rem 1rem;
+  z-index: 3;
+  max-width: 40rem;
+  margin: auto;
+  padding: 0.75rem 1rem;
+  color: #fff3df;
+  background: #762e25;
+  border-radius: 0.4rem;
+}
+
 #error {
   color: #ffb7a4;
 }

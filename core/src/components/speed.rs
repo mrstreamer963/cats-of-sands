@@ -1,10 +1,10 @@
 use super::{PreparedComponent, deserialize, fixed, prepare};
 use crate::Fixed;
 use bevy_ecs::prelude::Component;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 
-#[derive(Clone, Component)]
+#[derive(Clone, Component, Serialize, Deserialize)]
 pub(crate) struct Speed(pub Fixed);
 
 impl Speed {

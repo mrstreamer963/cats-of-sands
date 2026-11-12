@@ -1,3 +1,5 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 /// Signed Q32.32 number. Its value is `raw / 2³²`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Fixed(i64);
@@ -74,6 +76,19 @@ impl Fixed {
             Self((i128::from(x.0) + offset_x) as i64),
             Self((i128::from(y.0) + offset_y) as i64),
         )
+    }
+}
+
+impl Serialize for Fixed {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(self.to_f64())
+    }
+}
+
+impl<'de> Deserialize<'de> for Fixed {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        Self::try_from_f64(value).ok_or_else(|| serde::de::Error::custom("invalid fixed value"))
     }
 }
 

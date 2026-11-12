@@ -1,10 +1,10 @@
 use crate::components::{self, PreparedComponent, Registry};
 use crate::tile_map::{Ground, Wall};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value};
 use std::collections::BTreeMap;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Layer {
     pub name: String,
     pub text: String,

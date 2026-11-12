@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 
 /// Visual component of an entity.
-#[derive(Clone, Component, Serialize)]
+#[derive(Clone, Component, Serialize, Deserialize)]
 pub struct Sprite {
     #[serde(serialize_with = "serialize_fixed")]
     pub radius: Fixed,

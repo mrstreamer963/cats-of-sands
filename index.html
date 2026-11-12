@@ -7,18 +7,44 @@
   </head>
   <body>
     <main>
-      <h1>Cats of Sands</h1>
-      <form id="launch">
-        <label for="map">Карта</label>
-        <select id="map" name="map" required disabled></select>
-        <fieldset>
-          <legend>Аддоны</legend>
-          <div id="addons"></div>
-        </fieldset>
-        <button type="submit" disabled>Запустить</button>
-      </form>
-      <p id="error" role="alert" hidden></p>
-      <canvas width="640" height="360" aria-label="Демонстрационная сцена" hidden></canvas>
+      <section id="launch-screen">
+        <h1>Cats of Sands</h1>
+        <form id="launch">
+          <label for="map">Карта</label>
+          <select id="map" name="map" required disabled></select>
+          <fieldset>
+            <legend>Аддоны</legend>
+            <div id="addons"></div>
+          </fieldset>
+          <button type="submit" disabled>Запустить</button>
+        </form>
+        <p id="error" role="alert" hidden></p>
+      </section>
+      <section id="game" aria-label="Игра" hidden>
+        <canvas width="640" height="360" aria-label="Игровая карта" tabindex="0"></canvas>
+        <div id="game-overlay" hidden>
+          <section id="pause-menu" class="menu-panel" role="dialog" aria-modal="true" aria-labelledby="pause-title" hidden>
+            <h2 id="pause-title">Пауза</h2>
+            <button id="resume" type="button">Продолжить</button>
+            <button id="save-game" type="button">Сохранить игру</button>
+            <button id="open-load" type="button">Загрузить игру</button>
+            <button id="open-main-menu" type="button">В главное меню</button>
+          </section>
+          <section id="load-menu" class="menu-panel" role="dialog" aria-modal="true" aria-labelledby="load-title" hidden>
+            <h2 id="load-title">Загрузить игру</h2>
+            <label for="save-file">Файл сохранения</label>
+            <input id="save-file" type="file" accept=".json,application/json">
+            <button id="cancel-load" type="button">Назад</button>
+          </section>
+          <section id="confirm-menu" class="menu-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
+            <h2 id="confirm-title">Подтвердите действие</h2>
+            <p id="confirm-message"></p>
+            <button id="confirm-yes" type="button">Продолжить</button>
+            <button id="confirm-no" type="button">Назад</button>
+          </section>
+        </div>
+        <p id="game-error" role="alert" hidden></p>
+      </section>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>

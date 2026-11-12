@@ -15,9 +15,9 @@ pub use fixed::Fixed;
 pub use sim_id::SimId;
 
 use bevy_ecs::prelude::*;
-use components::{MoveTarget, PreparedComponent, Speed, Velocity};
+use components::{ClickColor, MoveTarget, PreparedComponent, Speed, Velocity};
 use observers::{Clicked, apply_click_color};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use systems::move_entities;
 use tile_map::{Grid, Route, TileMap};
@@ -28,6 +28,20 @@ const SCENE_WIDTH: Fixed = Fixed::from_int(640);
 const SCENE_HEIGHT: Fixed = Fixed::from_int(360);
 const STEP: f64 = 1.0 / TICKS_PER_SECOND as f64;
 const MAX_FRAME_SECONDS: f64 = 0.25;
+
+mod u64_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Serialize)]
 pub struct EntitySnapshot<'a> {
@@ -40,6 +54,7 @@ pub struct EntitySnapshot<'a> {
     pub sprite: Option<&'a Sprite>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub enum Command {
     Click { id: SimId },
     DamageWall { column: u32, row: u32, damage: u32 },
@@ -47,11 +62,61 @@ pub enum Command {
     MoveGroupTo { ids: Vec<SimId>, point: Position },
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SimEvent {
     pub tick: u64,
     pub id: SimId,
     pub color: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SimulationSnapshot {
+    #[serde(with = "u64_string")]
+    tick: u64,
+    last_id: u32,
+    entities: Vec<EntityState>,
+    commands: Vec<ScheduledCommands>,
+    events: Vec<SimEventState>,
+    wall_durability: Vec<Option<u32>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SimEventState {
+    #[serde(with = "u64_string")]
+    tick: u64,
+    id: SimId,
+    color: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledCommands {
+    #[serde(with = "u64_string")]
+    tick: u64,
+    commands: Vec<Command>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EntityState {
+    id: SimId,
+    #[serde(rename = "type")]
+    type_name: String,
+    position: Option<Position>,
+    sprite: Option<Sprite>,
+    speed: Option<Speed>,
+    velocity: Option<Velocity>,
+    click_color: Option<ClickColor>,
+    move_target: Option<MoveTarget>,
+    route: Option<Route>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionSnapshot {
+    version: u32,
+    layers: Vec<Layer>,
+    grid: Option<Grid>,
+    simulation: SimulationSnapshot,
+    accumulator: f64,
+    previous_positions: Vec<(SimId, Position)>,
 }
 
 #[derive(Default, Resource)]
@@ -352,6 +417,147 @@ impl Simulation {
             .collect()
     }
 
+    fn save_state(&self) -> SimulationSnapshot {
+        let entities = self
+            .entities
+            .iter()
+            .map(|(&id, (entity, type_name))| EntityState {
+                id,
+                type_name: type_name.clone(),
+                position: self.world.get::<Position>(*entity).cloned(),
+                sprite: self.world.get::<Sprite>(*entity).cloned(),
+                speed: self.world.get::<Speed>(*entity).cloned(),
+                velocity: self.world.get::<Velocity>(*entity).cloned(),
+                click_color: self.world.get::<ClickColor>(*entity).cloned(),
+                move_target: self.world.get::<MoveTarget>(*entity).cloned(),
+                route: self.world.get::<Route>(*entity).cloned(),
+            })
+            .collect();
+        let wall_durability = self
+            .world
+            .get_resource::<TileMap>()
+            .map(|map| map.wall_durability(&self.world))
+            .unwrap_or_default();
+        SimulationSnapshot {
+            tick: self.tick,
+            last_id: self.last_id,
+            entities,
+            commands: self
+                .commands
+                .iter()
+                .map(|(&tick, commands)| ScheduledCommands {
+                    tick,
+                    commands: commands.clone(),
+                })
+                .collect(),
+            events: self
+                .world
+                .resource::<SimEvents>()
+                .0
+                .iter()
+                .map(|event| SimEventState {
+                    tick: event.tick,
+                    id: event.id,
+                    color: event.color.clone(),
+                })
+                .collect(),
+            wall_durability,
+        }
+    }
+
+    fn restore_state(&mut self, state: SimulationSnapshot) -> Result<(), String> {
+        if state.entities.iter().any(|entity| entity.id.0 == 0)
+            || state
+                .entities
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
+            || state
+                .entities
+                .last()
+                .is_some_and(|entity| entity.id.0 > state.last_id)
+        {
+            return Err("Снимок содержит некорректные идентификаторы юнитов".into());
+        }
+        if state
+            .commands
+            .iter()
+            .any(|scheduled| scheduled.tick < state.tick)
+            || state
+                .commands
+                .windows(2)
+                .any(|pair| pair[0].tick >= pair[1].tick)
+        {
+            return Err("Снимок содержит команды для уже выполненных тиков".into());
+        }
+
+        for (_, (entity, _)) in std::mem::take(&mut self.entities) {
+            self.world.despawn(entity);
+        }
+        for saved in state.entities {
+            let components = self.types.get(&saved.type_name).ok_or_else(|| {
+                format!("Снимок содержит неизвестный тип юнита: {}", saved.type_name)
+            })?;
+            let mut entity = self.world.spawn_empty();
+            for insert in components {
+                insert(&mut entity);
+            }
+            entity.remove::<Position>();
+            entity.remove::<Sprite>();
+            entity.remove::<Speed>();
+            entity.remove::<Velocity>();
+            entity.remove::<ClickColor>();
+            entity.remove::<MoveTarget>();
+            entity.remove::<Route>();
+            if let Some(value) = saved.position {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.sprite {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.speed {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.velocity {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.click_color {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.move_target {
+                entity.insert(value);
+            }
+            if let Some(value) = saved.route {
+                entity.insert(value);
+            }
+            self.entities
+                .insert(saved.id, (entity.id(), saved.type_name));
+        }
+        self.last_id = state.last_id;
+        self.tick = state.tick;
+        self.commands = state
+            .commands
+            .into_iter()
+            .map(|scheduled| (scheduled.tick, scheduled.commands))
+            .collect();
+        self.world.resource_mut::<SimEvents>().0 = state
+            .events
+            .into_iter()
+            .map(|event| SimEvent {
+                tick: event.tick,
+                id: event.id,
+                color: event.color,
+            })
+            .collect();
+        if self.world.contains_resource::<TileMap>() {
+            self.world.resource_scope(|world, mut map: Mut<TileMap>| {
+                map.restore_wall_durability(world, &state.wall_durability)
+            })?;
+        } else if !state.wall_durability.is_empty() {
+            return Err("Снимок содержит стены для карты без тайлов".into());
+        }
+        Ok(())
+    }
+
     pub fn drain_events(&mut self) -> Vec<SimEvent> {
         std::mem::take(&mut self.world.resource_mut::<SimEvents>().0)
     }
@@ -363,6 +569,8 @@ pub struct Session {
     simulation: Simulation,
     accumulator: f64,
     previous_positions: BTreeMap<SimId, Position>,
+    layers: Vec<Layer>,
+    grid: Option<Grid>,
 }
 
 #[wasm_bindgen]
@@ -373,12 +581,54 @@ impl Session {
         let grid: Option<Grid> = serde_wasm_bindgen::from_value(grid)?;
         let config = config::load(&layers).map_err(|error| JsError::new(&error))?;
         let simulation =
-            Simulation::from_config(config, grid).map_err(|error| JsError::new(&error))?;
+            Simulation::from_config(config, grid.clone()).map_err(|error| JsError::new(&error))?;
         Ok(Self {
             simulation,
             accumulator: 0.0,
             previous_positions: BTreeMap::new(),
+            layers,
+            grid,
         })
+    }
+
+    pub fn from_snapshot(value: JsValue) -> Result<Session, JsError> {
+        let snapshot: SessionSnapshot = serde_wasm_bindgen::from_value(value)
+            .map_err(|error| JsError::new(&format!("Снимок игры: {error}")))?;
+        if snapshot.version != 1 {
+            return Err(JsError::new("Неподдерживаемая версия снимка игры"));
+        }
+        if !snapshot.accumulator.is_finite() || !(0.0..STEP).contains(&snapshot.accumulator) {
+            return Err(JsError::new("Снимок содержит некорректное состояние часов"));
+        }
+        let config = config::load(&snapshot.layers).map_err(|error| JsError::new(&error))?;
+        let mut simulation = Simulation::from_config(config, snapshot.grid.clone())
+            .map_err(|error| JsError::new(&error))?;
+        simulation
+            .restore_state(snapshot.simulation)
+            .map_err(|error| JsError::new(&error))?;
+        Ok(Self {
+            simulation,
+            accumulator: snapshot.accumulator,
+            previous_positions: snapshot.previous_positions.into_iter().collect(),
+            layers: snapshot.layers,
+            grid: snapshot.grid,
+        })
+    }
+
+    pub fn export_snapshot(&self) -> Result<JsValue, JsError> {
+        let snapshot = SessionSnapshot {
+            version: 1,
+            layers: self.layers.clone(),
+            grid: self.grid.clone(),
+            simulation: self.simulation.save_state(),
+            accumulator: self.accumulator,
+            previous_positions: self
+                .previous_positions
+                .iter()
+                .map(|(&id, position)| (id, position.clone()))
+                .collect(),
+        };
+        Ok(serde_wasm_bindgen::to_value(&snapshot)?)
     }
 
     /// Accepts up to 0.25 seconds per call.
@@ -688,11 +938,15 @@ placements:
             simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
             previous_positions: BTreeMap::new(),
+            layers: Vec::new(),
+            grid: None,
         };
         let mut two_steps_per_frame = Session {
             simulation: Simulation::from_layers(&config::tests::shipped_scene()).unwrap(),
             accumulator: 0.0,
             previous_positions: BTreeMap::new(),
+            layers: Vec::new(),
+            grid: None,
         };
 
         for _ in 0..60 {
@@ -715,6 +969,48 @@ placements:
             session.advance(STEP / 2.0);
             assert!((session.interpolation_alpha() - 0.5).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn simulation_snapshot_restores_motion_and_pending_commands() {
+        let layer = config::tests::layer(
+            "snapshot.yaml",
+            "units:\n  - type: CAT\n    Speed: 60\n    Sprite: { radius: 4, color: '#ffffff' }\nplacements:\n  - type: CAT\n    position: { x: 10, y: 20 }",
+        );
+        let mut original = Simulation::from_layers(std::slice::from_ref(&layer)).unwrap();
+        original
+            .submit_command(
+                0,
+                Command::MoveTo {
+                    id: SimId(1),
+                    point: Position {
+                        x: Fixed::from_int(100),
+                        y: Fixed::from_int(20),
+                    },
+                },
+            )
+            .unwrap();
+        original.step(17);
+        original
+            .submit_command(original.current_tick(), Command::Click { id: SimId(1) })
+            .unwrap();
+        let encoded = serde_yaml_ng::to_string(&original.save_state()).unwrap();
+        let decoded: SimulationSnapshot = serde_yaml_ng::from_str(&encoded).unwrap();
+        let mut restored = Simulation::from_layers(&[layer]).unwrap();
+        restored.restore_state(decoded).unwrap();
+
+        assert_eq!(restored.current_tick(), original.current_tick());
+        assert_eq!(
+            restored.snapshot()[0].position.unwrap().x,
+            original.snapshot()[0].position.unwrap().x
+        );
+        original.step(20);
+        restored.step(20);
+        assert_eq!(
+            restored.snapshot()[0].position.unwrap().x,
+            original.snapshot()[0].position.unwrap().x
+        );
+        assert_eq!(restored.commands.len(), original.commands.len());
     }
 
     #[test]

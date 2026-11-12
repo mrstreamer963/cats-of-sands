@@ -1,8 +1,9 @@
 use crate::Fixed;
 use bevy_ecs::prelude::Component;
+use serde::{Deserialize, Serialize};
 
 /// Displacement per simulation tick.
-#[derive(Component)]
+#[derive(Clone, Component, Deserialize, Serialize)]
 pub(crate) struct Velocity {
     pub(crate) x: Fixed,
     pub(crate) y: Fixed,

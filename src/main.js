@@ -9,14 +9,24 @@ import './style.css';
 
 const dataRoot = 'data/';
 const storageKey = 'cats-of-sands.addons';
+const main = document.querySelector('main');
+const launchScreen = document.querySelector('#launch-screen');
 const form = document.querySelector('#launch');
 const mapChoice = form.querySelector('#map');
 const choices = document.querySelector('#addons');
 const fields = form.querySelector('fieldset');
 const launch = form.querySelector('button');
 const errorMessage = document.querySelector('#error');
-const canvas = document.querySelector('canvas');
+const game = document.querySelector('#game');
+const canvas = game.querySelector('canvas');
 const context = canvas.getContext('2d');
+const overlay = document.querySelector('#game-overlay');
+const pauseMenu = document.querySelector('#pause-menu');
+const loadMenu = document.querySelector('#load-menu');
+const confirmMenu = document.querySelector('#confirm-menu');
+const confirmMessage = document.querySelector('#confirm-message');
+const gameError = document.querySelector('#game-error');
+const saveFile = document.querySelector('#save-file');
 
 function restoreSelection() {
   try {
@@ -128,6 +138,164 @@ async function loadLayer(name) {
   }
 }
 
+function cameraSnapshot() {
+  if (!camera?.fit || !camera.width || !camera.height) return null;
+  const center = camera.world(camera.width / 2, camera.height / 2);
+  return { center, zoom: camera.scale / camera.fit };
+}
+
+function saveGame() {
+  try {
+    const file = {
+      format: 'cats-of-sands-save',
+      version: 1,
+      session: session.export_snapshot(),
+      selectedIds: [...selectedIds],
+      camera: cameraSnapshot(),
+    };
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cats-of-sands-${new Date().toISOString().replaceAll(':', '-')}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    gameError.textContent = 'Сохранение скачано.';
+    gameError.hidden = false;
+  } catch (error) {
+    gameError.textContent = `Не удалось сохранить игру: ${error.message}`;
+    gameError.hidden = false;
+  }
+}
+
+async function savedMap(snapshot) {
+  const layers = snapshot.session?.layers;
+  if (!Array.isArray(layers)) throw new Error('В файле отсутствуют слои игры');
+  if (layers.some(({ name, text }) => typeof text !== 'string' ||
+      typeof name !== 'string' || !/^(?:data|addons)\//.test(name) ||
+      name.split('/').some(segment => !segment || segment === '.' || segment === '..' || /[\\?#\u0000-\u001f\u007f]/u.test(segment)))) {
+    throw new Error('В файле указан недопустимый путь к слою игры');
+  }
+  for (const layer of [...layers].reverse()) {
+    let reference;
+    try {
+      reference = tiled_reference(layer.text);
+    } catch {
+      continue;
+    }
+    if (reference) {
+      return loadTiled(relativeResource(layer.name, reference), loadLayer, loadImage);
+    }
+  }
+  return undefined;
+}
+
+function validateSavedPresentation(snapshot, nextSession) {
+  if (!Array.isArray(snapshot.selectedIds) ||
+      snapshot.selectedIds.some(id => !Number.isInteger(id) || id < 1)) {
+    throw new Error('В файле повреждён список выделенных юнитов');
+  }
+  const liveIds = new Set(nextSession.snapshot().map(entity => entity.id));
+  if (snapshot.selectedIds.some(id => !liveIds.has(id))) {
+    throw new Error('В файле выделены отсутствующие юниты');
+  }
+  if (snapshot.camera !== null && snapshot.camera !== undefined) {
+    const { center, zoom } = snapshot.camera;
+    if (!center || !Number.isFinite(center.x) || !Number.isFinite(center.y) ||
+        !Number.isFinite(zoom) || zoom < 1 || zoom > 8) {
+      throw new Error('В файле повреждено состояние камеры');
+    }
+  }
+}
+
+async function readSavedFile(file) {
+  if (!file) return;
+  pendingImport?.session?.free();
+  pendingImport = undefined;
+  try {
+    const snapshot = JSON.parse(await file.text());
+    if (!snapshot || snapshot.format !== 'cats-of-sands-save' || snapshot.version !== 1) {
+      throw new Error('Неизвестный формат или версия файла сохранения');
+    }
+    await init();
+    const nextSession = Session.from_snapshot(snapshot.session);
+    try {
+      const nextMap = await savedMap(snapshot);
+      validateSavedPresentation(snapshot, nextSession);
+      pendingImport = { session: nextSession, map: nextMap, snapshot };
+    } catch (error) {
+      nextSession.free();
+      throw error;
+    }
+    askConfirmation({
+      title: 'Заменить текущую партию?',
+      message: 'Текущая партия будет заменена выбранным файлом.',
+      action: loadPendingImport,
+      confirmState: 'confirm-load',
+    });
+  } catch (error) {
+    gameError.textContent = `Не удалось загрузить игру: ${error.message}`;
+    gameError.hidden = false;
+    showGameState('paused');
+    document.querySelector('#open-load').focus();
+  } finally {
+    saveFile.value = '';
+  }
+}
+
+function installSession(nextSession, nextMap, presentation = {}) {
+  cancelAnimationFrame(frame);
+  session?.free();
+  session = nextSession;
+  tiledMap = nextMap;
+  camera = nextMap ? new Camera(nextMap) : undefined;
+  pendingCamera = presentation.camera ?? null;
+  renderedView = undefined;
+  drag = undefined;
+  suppressClick = false;
+  canvas.classList.toggle('tile-map', Boolean(camera));
+  if (!camera) {
+    canvas.width = sceneWidth;
+    canvas.height = sceneHeight;
+  }
+  drawnEntities = [];
+  selectedIds.clear();
+  for (const id of presentation.selectedIds ?? []) selectedIds.add(id);
+  renderTick = undefined;
+  previousTime = undefined;
+  gameError.hidden = true;
+  showGameState('playing');
+  frame = requestAnimationFrame(draw);
+}
+
+function loadPendingImport() {
+  if (!pendingImport) return;
+  const loaded = pendingImport;
+  pendingImport = undefined;
+  installSession(loaded.session, loaded.map, {
+    camera: loaded.snapshot.camera,
+    selectedIds: loaded.snapshot.selectedIds,
+  });
+  pauseGame();
+}
+
+function leaveToMainMenu() {
+  cancelAnimationFrame(frame);
+  session?.free();
+  session = undefined;
+  tiledMap = undefined;
+  camera = undefined;
+  pendingCamera = undefined;
+  renderEntities = [];
+  drawnEntities = [];
+  selectedIds.clear();
+  gameError.hidden = true;
+  showGameState('menu');
+  mapChoice.focus();
+}
+
 let session;
 let frame;
 let previousTime;
@@ -143,6 +311,49 @@ let renderedView;
 let walls = [];
 let drag;
 let suppressClick = false;
+let gameState = 'menu';
+let confirmationAction;
+let confirmationReturnState = 'paused';
+let pendingImport;
+let pendingCamera;
+
+function showGameState(next) {
+  gameState = next;
+  const inGame = next !== 'menu';
+  launchScreen.hidden = inGame;
+  game.hidden = !inGame;
+  main.classList.toggle('in-game', inGame);
+  canvas.inert = next !== 'playing';
+  overlay.hidden = !inGame || next === 'playing';
+  pauseMenu.hidden = next !== 'paused';
+  loadMenu.hidden = next !== 'loading-file';
+  confirmMenu.hidden = !next.startsWith('confirm-');
+}
+
+function pauseGame() {
+  if (gameState !== 'playing') return;
+  previousTime = undefined;
+  drag = undefined;
+  suppressClick = false;
+  showGameState('paused');
+  document.querySelector('#resume').focus();
+}
+
+function resumeGame() {
+  if (gameState !== 'paused') return;
+  previousTime = undefined;
+  showGameState('playing');
+  canvas.focus();
+}
+
+function askConfirmation({ title, message, action, returnState = 'paused', confirmState = 'confirm-exit' }) {
+  confirmationAction = action;
+  confirmationReturnState = returnState;
+  document.querySelector('#confirm-title').textContent = title;
+  confirmMessage.textContent = message;
+  showGameState(confirmState);
+  document.querySelector('#confirm-yes').focus();
+}
 
 function canvasPoint(event) {
   const bounds = canvas.getBoundingClientRect();
@@ -153,7 +364,7 @@ function canvasPoint(event) {
 }
 
 canvas.addEventListener('wheel', event => {
-  if (!camera?.fit) return;
+  if (gameState !== 'playing' || !camera?.fit) return;
   event.preventDefault();
   const point = canvasPoint(event);
   const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 120 : 1);
@@ -161,14 +372,14 @@ canvas.addEventListener('wheel', event => {
 }, { passive: false });
 
 canvas.addEventListener('pointerdown', event => {
-  if (!camera?.fit || event.button !== 0 || !event.isPrimary) return;
+  if (gameState !== 'playing' || !camera?.fit || event.button !== 0 || !event.isPrimary) return;
   suppressClick = false;
   drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
   canvas.setPointerCapture(event.pointerId);
 });
 
 canvas.addEventListener('pointermove', event => {
-  if (drag?.id !== event.pointerId) return;
+  if (gameState !== 'playing' || drag?.id !== event.pointerId) return;
   const dx = event.clientX - drag.x;
   const dy = event.clientY - drag.y;
   if (!suppressClick && Math.hypot(dx, dy) < 4) return;
@@ -184,7 +395,7 @@ canvas.addEventListener('lostpointercapture', event => {
 });
 
 canvas.addEventListener('click', event => {
-  if (!session || suppressClick) return;
+  if (gameState !== 'playing' || !session || suppressClick) return;
   const point = canvasPoint(event);
   if (camera && !renderedView) return;
   const { x, y } = renderedView ? renderedView.world(point.x, point.y) : point;
@@ -204,11 +415,11 @@ canvas.addEventListener('click', event => {
 });
 
 function draw(time) {
-  if (previousTime !== undefined) {
+  if (gameState === 'playing' && previousTime !== undefined) {
     session.advance((time - previousTime) / 1000);
     session.drain_events();
   }
-  previousTime = time;
+  previousTime = gameState === 'playing' ? time : undefined;
 
   const tick = session.current_tick();
   if (tick !== renderTick) {
@@ -236,6 +447,13 @@ function draw(time) {
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
     camera.resize(width, height);
+    if (pendingCamera) {
+      camera.scale = camera.fit * pendingCamera.zoom;
+      camera.x = camera.width / 2 - pendingCamera.center.x * camera.scale;
+      camera.y = camera.height / 2 - pendingCamera.center.y * camera.scale;
+      camera.constrain();
+      pendingCamera = undefined;
+    }
   }
   context.resetTransform();
   context.clearRect(0, 0, canvas.width, canvas.height);
@@ -258,6 +476,60 @@ function draw(time) {
   }
   frame = requestAnimationFrame(draw);
 }
+
+function cancelConfirmation() {
+  confirmationAction = undefined;
+  pendingImport?.session?.free();
+  pendingImport = undefined;
+  showGameState(confirmationReturnState);
+  document.querySelector('#resume').focus();
+}
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || event.repeat || gameState === 'menu') return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (gameState === 'playing') {
+    pauseGame();
+  } else if (gameState === 'paused') {
+    resumeGame();
+  } else if (gameState === 'loading-file') {
+    showGameState('paused');
+    document.querySelector('#open-load').focus();
+  } else if (gameState.startsWith('confirm-')) {
+    cancelConfirmation();
+  }
+});
+
+document.querySelector('#resume').addEventListener('click', resumeGame);
+document.querySelector('#save-game').addEventListener('click', saveGame);
+document.querySelector('#open-load').addEventListener('click', () => {
+  showGameState('loading-file');
+  saveFile.focus();
+});
+document.querySelector('#cancel-load').addEventListener('click', () => {
+  showGameState('paused');
+  document.querySelector('#open-load').focus();
+});
+saveFile.addEventListener('change', () => readSavedFile(saveFile.files?.[0]));
+document.querySelector('#open-main-menu').addEventListener('click', () => askConfirmation({
+  title: 'Выйти в главное меню?',
+  message: 'Текущая партия будет закрыта. Сохраните её в файл, если хотите продолжить позже.',
+  action: leaveToMainMenu,
+}));
+document.querySelector('#confirm-yes').addEventListener('click', async () => {
+  const action = confirmationAction;
+  confirmationAction = undefined;
+  try {
+    await action?.();
+  } catch (error) {
+    gameError.textContent = `Не удалось выполнить действие: ${error.message}`;
+    gameError.hidden = false;
+    showGameState('paused');
+    document.querySelector('#resume').focus();
+  }
+});
+document.querySelector('#confirm-no').addEventListener('click', cancelConfirmation);
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -291,25 +563,7 @@ form.addEventListener('submit', async event => {
     } catch (error) {
       throw new Error(`${selectedLayer.name}: ${error.message}`);
     }
-    cancelAnimationFrame(frame);
-    session?.free();
-    session = next;
-    tiledMap = nextMap;
-    camera = nextMap ? new Camera(nextMap) : undefined;
-    renderedView = undefined;
-    drag = undefined;
-    suppressClick = false;
-    canvas.classList.toggle('tile-map', Boolean(camera));
-    if (!camera) {
-      canvas.width = sceneWidth;
-      canvas.height = sceneHeight;
-    }
-    drawnEntities = [];
-    selectedIds.clear();
-    renderTick = undefined;
-    previousTime = undefined;
-    canvas.hidden = false;
-    frame = requestAnimationFrame(draw);
+    installSession(next, nextMap);
   } catch (error) {
     errorMessage.textContent = error.message;
     errorMessage.hidden = false;

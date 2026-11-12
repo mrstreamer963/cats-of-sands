@@ -1,9 +1,9 @@
 use super::{PreparedComponent, deserialize, prepare, validate_color};
 use bevy_ecs::prelude::Component;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 
-#[derive(Clone, Component)]
+#[derive(Clone, Component, Serialize, Deserialize)]
 pub(crate) struct ClickColor(pub String);
 
 impl ClickColor {

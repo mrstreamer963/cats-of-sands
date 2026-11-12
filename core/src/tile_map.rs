@@ -1,24 +1,24 @@
 use crate::{Fixed, Position};
 use bevy_ecs::prelude::{Component, Entity, Resource, World};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 
-#[derive(Clone, Component, Deserialize)]
+#[derive(Clone, Component, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Ground {
     pub passable: bool,
     pub cost: u32,
 }
 
-#[derive(Clone, Component, Deserialize)]
+#[derive(Clone, Component, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Wall {
     pub blocking: bool,
     pub durability: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct Grid {
     width: usize,
     height: usize,
@@ -28,7 +28,7 @@ pub(crate) struct Grid {
     walls: Vec<Option<Tile>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Tile {
     terrain: String,
     gid: u32,
@@ -274,6 +274,45 @@ impl TileMap {
             .filter_map(|(cell, entry)| entry.wall.map(|(_, gid)| (cell, gid)))
     }
 
+    pub fn wall_durability(&self, world: &World) -> Vec<Option<u32>> {
+        self.cells
+            .iter()
+            .map(|cell| {
+                cell.wall
+                    .and_then(|(entity, _)| world.get::<Wall>(entity).map(|wall| wall.durability))
+            })
+            .collect()
+    }
+
+    pub fn restore_wall_durability(
+        &mut self,
+        world: &mut World,
+        durability: &[Option<u32>],
+    ) -> Result<(), String> {
+        if durability.len() != self.cells.len() {
+            return Err("Размер снимка стен не совпадает с картой".into());
+        }
+        for (index, saved) in durability.iter().copied().enumerate() {
+            match (self.cells[index].wall, saved) {
+                (Some((entity, _)), Some(value @ 1..=u32::MAX)) => {
+                    world
+                        .get_mut::<Wall>(entity)
+                        .ok_or_else(|| "Снимок содержит некорректную стену".to_owned())?
+                        .durability = value;
+                }
+                (Some((entity, _)), None) => {
+                    self.cells[index].wall = None;
+                    world.despawn(entity);
+                }
+                (None, None) => {}
+                (None, Some(_)) | (Some(_), Some(0)) => {
+                    return Err("Снимок содержит некорректное состояние стены".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn damage_wall(&mut self, world: &mut World, column: usize, row: usize, damage: u32) {
         let Some(cell) = self.index(column, row) else {
             return;
@@ -300,13 +339,82 @@ fn valid_extent(cells: usize, tile: i32) -> bool {
             .is_some()
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Serialize, Deserialize)]
 pub(crate) struct Route(pub VecDeque<Position>);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Command, SimId, Simulation, config};
+
+    #[test]
+    fn snapshot_restores_wall_durability_and_destruction() {
+        let layer = config::tests::layer(
+            "wall-snapshot.yaml",
+            "tiled: test.tmj\nground: { sand: { passable: true, cost: 1 } }\nwalls: { stone: { blocking: true, durability: 100 } }\nunits: []\nplacements: []",
+        );
+        let grid = Grid {
+            width: 1,
+            height: 1,
+            tilewidth: 16,
+            tileheight: 16,
+            ground: vec![Tile {
+                terrain: "sand".into(),
+                gid: 1,
+            }],
+            walls: vec![Some(Tile {
+                terrain: "stone".into(),
+                gid: 2,
+            })],
+        };
+        let mut simulation = Simulation::from_config(
+            config::load(std::slice::from_ref(&layer)).unwrap(),
+            Some(grid.clone()),
+        )
+        .unwrap();
+        simulation
+            .submit_command(
+                0,
+                Command::DamageWall {
+                    column: 0,
+                    row: 0,
+                    damage: 25,
+                },
+            )
+            .unwrap();
+        simulation.step(1);
+        let damaged = simulation.save_state();
+
+        let mut restored = Simulation::from_config(
+            config::load(std::slice::from_ref(&layer)).unwrap(),
+            Some(grid.clone()),
+        )
+        .unwrap();
+        restored.restore_state(damaged).unwrap();
+        let wall_entity = restored.world.resource::<TileMap>().cells[0]
+            .wall
+            .unwrap()
+            .0;
+        assert_eq!(
+            restored.world.get::<Wall>(wall_entity).unwrap().durability,
+            75
+        );
+
+        simulation
+            .submit_command(
+                1,
+                Command::DamageWall {
+                    column: 0,
+                    row: 0,
+                    damage: 100,
+                },
+            )
+            .unwrap();
+        simulation.step(1);
+        let destroyed = simulation.save_state();
+        restored.restore_state(destroyed).unwrap();
+        assert!(restored.world.resource::<TileMap>().cells[0].wall.is_none());
+    }
 
     #[test]
     fn blocked_waypoint_replans_an_active_route() {
