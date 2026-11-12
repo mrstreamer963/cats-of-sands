@@ -209,7 +209,7 @@ impl Simulation {
                 .world
                 .get::<Position>(entity)
                 .and_then(|position| map.cell(position))
-                .is_some_and(|cell| map.cost(&self.world, cell).is_some());
+                .is_some_and(|cell| map.cost(cell).is_some());
             if !valid {
                 self.world.despawn(entity);
                 return Err(format!("{type_name}: позиция вне проходимой части карты"));
@@ -218,7 +218,7 @@ impl Simulation {
                 .world
                 .get::<Velocity>(entity)
                 .filter(|velocity| velocity.x.raw() > 0)
-                .and_then(|_| map.drift_target(&self.world, self.world.get::<Position>(entity)?));
+                .and_then(|_| map.drift_target(self.world.get::<Position>(entity)?));
             let mut entity = self.world.entity_mut(entity);
             entity.insert(Velocity::ZERO);
             if let Some(target) = target {
@@ -299,11 +299,9 @@ impl Simulation {
         let blocked: Vec<_> = query
             .iter(&self.world)
             .filter(|(_, target, route)| {
-                std::iter::once(&target.0).chain(&route.0).any(|point| {
-                    map.cell(point)
-                        .and_then(|cell| map.cost(&self.world, cell))
-                        .is_none()
-                })
+                std::iter::once(&target.0)
+                    .chain(&route.0)
+                    .any(|point| map.cell(point).and_then(|cell| map.cost(cell)).is_none())
             })
             .map(|(entity, target, route)| (entity, route.0.back().unwrap_or(&target.0).clone()))
             .collect();
@@ -328,7 +326,7 @@ impl Simulation {
             .world
             .get::<Position>(entity)
             .expect("movable entity has position");
-        let route = map.route(&self.world, start, &point);
+        let route = map.route(start, &point);
         self.set_route(entity, route);
     }
 
@@ -374,7 +372,7 @@ impl Simulation {
                     }
                     return;
                 };
-                let regions = map.regions(&self.world);
+                let regions = map.regions();
                 let mut assigned = BTreeSet::new();
                 for (entity, destination) in members.into_iter().zip(destinations) {
                     let map = self.world.resource::<TileMap>();
@@ -395,7 +393,7 @@ impl Simulation {
                             } else {
                                 map.closest_free_center(&regions, region, &destination, &assigned)?
                             };
-                            let route = map.route(&self.world, start, &goal)?;
+                            let route = map.route(start, &goal)?;
                             assigned.insert((goal.x, goal.y));
                             Some(route)
                         });

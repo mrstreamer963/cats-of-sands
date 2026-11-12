@@ -39,6 +39,12 @@ struct Cell {
     wall: Option<(Entity, u32)>,
 }
 
+#[derive(Clone, Copy)]
+struct Edge {
+    destination: usize,
+    cost: u32,
+}
+
 #[derive(Resource)]
 pub(crate) struct TileMap {
     width: usize,
@@ -46,6 +52,8 @@ pub(crate) struct TileMap {
     tilewidth: i32,
     tileheight: i32,
     cells: Vec<Cell>,
+    costs: Vec<Option<u32>>,
+    edges: Vec<[Option<Edge>; 4]>,
 }
 
 impl TileMap {
@@ -84,13 +92,22 @@ impl TileMap {
                 wall,
             });
         }
-        Ok(Self {
+        let mut map = Self {
             width: grid.width,
             height: grid.height,
             tilewidth: grid.tilewidth,
             tileheight: grid.tileheight,
+            costs: cells
+                .iter()
+                .map(|cell| Self::read_cost(world, cell))
+                .collect(),
+            edges: vec![[None; 4]; cells.len()],
             cells,
-        })
+        };
+        for cell in 0..map.cells.len() {
+            map.update_edges(cell);
+        }
+        Ok(map)
     }
 
     pub fn cell(&self, position: &Position) -> Option<usize> {
@@ -109,13 +126,38 @@ impl TileMap {
         (column < self.width && row < self.height).then(|| row * self.width + column)
     }
 
-    pub fn cost(&self, world: &World, cell: usize) -> Option<u32> {
-        let cell = &self.cells[cell];
+    pub fn cost(&self, cell: usize) -> Option<u32> {
+        self.costs[cell]
+    }
+
+    fn read_cost(world: &World, cell: &Cell) -> Option<u32> {
         let ground = world.get::<Ground>(cell.ground)?;
         let blocked = cell
             .wall
             .is_some_and(|(entity, _)| world.get::<Wall>(entity).is_some_and(|wall| wall.blocking));
         (ground.passable && !blocked).then_some(ground.cost)
+    }
+
+    fn update_edges(&mut self, cell: usize) {
+        // A unit already in a blocked cell may still leave it.
+        self.edges[cell] = self.neighbors(cell).map(|neighbor| {
+            let destination = neighbor?;
+            Some(Edge {
+                destination,
+                cost: self.cost(destination)?,
+            })
+        });
+    }
+
+    fn update_passability(&mut self, world: &World, cell: usize) {
+        let cost = Self::read_cost(world, &self.cells[cell]);
+        if self.costs[cell] == cost {
+            return;
+        }
+        self.costs[cell] = cost;
+        for neighbor in self.neighbors(cell).into_iter().flatten() {
+            self.update_edges(neighbor);
+        }
     }
 
     pub fn dimensions(&self) -> (Fixed, Fixed) {
@@ -138,11 +180,11 @@ impl TileMap {
         }
     }
 
-    pub fn drift_target(&self, world: &World, position: &Position) -> Option<Position> {
+    pub fn drift_target(&self, position: &Position) -> Option<Position> {
         let start = self.cell(position)?;
         let row = start / self.width;
         let end = (start % self.width + 1..self.width)
-            .take_while(|column| self.cost(world, row * self.width + column).is_some())
+            .take_while(|column| self.cost(row * self.width + column).is_some())
             .last()
             .unwrap_or(start % self.width);
         let edge = Fixed::from_int((end + 1) as i32 * self.tilewidth);
@@ -153,15 +195,10 @@ impl TileMap {
         })
     }
 
-    pub fn route(
-        &self,
-        world: &World,
-        start: &Position,
-        goal: &Position,
-    ) -> Option<VecDeque<Position>> {
+    pub fn route(&self, start: &Position, goal: &Position) -> Option<VecDeque<Position>> {
         let start = self.cell(start)?;
         let target = self.cell(goal)?;
-        self.cost(world, target)?;
+        self.cost(target)?;
         if start == target {
             return Some(VecDeque::from([goal.clone()]));
         }
@@ -186,11 +223,9 @@ impl TileMap {
                 }
                 return Some(route);
             }
-            for next in self.neighbors(cell) {
-                let Some(step_cost) = self.cost(world, next) else {
-                    continue;
-                };
-                let next_cost = cost + u64::from(step_cost);
+            for edge in self.edges[cell].iter().flatten() {
+                let next = edge.destination;
+                let next_cost = cost + u64::from(edge.cost);
                 if next_cost < best[next] {
                     best[next] = next_cost;
                     parent[next] = cell;
@@ -210,7 +245,7 @@ impl TileMap {
             + (from / self.width).abs_diff(to / self.width)) as u64
     }
 
-    fn neighbors(&self, cell: usize) -> impl Iterator<Item = usize> {
+    fn neighbors(&self, cell: usize) -> [Option<usize>; 4] {
         let column = cell % self.width;
         let row = cell / self.width;
         [
@@ -219,21 +254,20 @@ impl TileMap {
             self.index(column + 1, row),
             self.index(column, row + 1),
         ]
-        .into_iter()
-        .flatten()
     }
 
-    pub fn regions(&self, world: &World) -> Vec<Option<usize>> {
+    pub fn regions(&self) -> Vec<Option<usize>> {
         let mut regions = vec![None; self.cells.len()];
         for start in 0..self.cells.len() {
-            if regions[start].is_some() || self.cost(world, start).is_none() {
+            if regions[start].is_some() || self.cost(start).is_none() {
                 continue;
             }
             regions[start] = Some(start);
             let mut pending = VecDeque::from([start]);
             while let Some(cell) = pending.pop_front() {
-                for next in self.neighbors(cell) {
-                    if regions[next].is_none() && self.cost(world, next).is_some() {
+                for edge in self.edges[cell].iter().flatten() {
+                    let next = edge.destination;
+                    if regions[next].is_none() {
                         regions[next] = Some(start);
                         pending.push_back(next);
                     }
@@ -303,6 +337,7 @@ impl TileMap {
                 (Some((entity, _)), None) => {
                     self.cells[index].wall = None;
                     world.despawn(entity);
+                    self.update_passability(world, index);
                 }
                 (None, None) => {}
                 (None, Some(_)) | (Some(_), Some(0)) => {
@@ -327,6 +362,7 @@ impl TileMap {
         if wall.durability == 0 {
             self.cells[cell].wall = None;
             world.despawn(entity);
+            self.update_passability(world, cell);
         }
     }
 }
@@ -354,18 +390,25 @@ mod tests {
             "tiled: test.tmj\nground: { sand: { passable: true, cost: 1 } }\nwalls: { stone: { blocking: true, durability: 100 } }\nunits: []\nplacements: []",
         );
         let grid = Grid {
-            width: 1,
+            width: 3,
             height: 1,
             tilewidth: 16,
             tileheight: 16,
-            ground: vec![Tile {
-                terrain: "sand".into(),
-                gid: 1,
-            }],
-            walls: vec![Some(Tile {
-                terrain: "stone".into(),
-                gid: 2,
-            })],
+            ground: vec![
+                Tile {
+                    terrain: "sand".into(),
+                    gid: 1,
+                };
+                3
+            ],
+            walls: vec![
+                None,
+                Some(Tile {
+                    terrain: "stone".into(),
+                    gid: 2,
+                }),
+                None,
+            ],
         };
         let mut simulation = Simulation::from_config(
             config::load(std::slice::from_ref(&layer)).unwrap(),
@@ -376,13 +419,17 @@ mod tests {
             .submit_command(
                 0,
                 Command::DamageWall {
-                    column: 0,
+                    column: 1,
                     row: 0,
                     damage: 25,
                 },
             )
             .unwrap();
         simulation.step(1);
+        let map = simulation.world.resource::<TileMap>();
+        let start = map.center(0);
+        let goal = map.center(2);
+        assert!(map.route(&start, &goal).is_none());
         let damaged = simulation.save_state();
 
         let mut restored = Simulation::from_config(
@@ -391,7 +438,7 @@ mod tests {
         )
         .unwrap();
         restored.restore_state(damaged).unwrap();
-        let wall_entity = restored.world.resource::<TileMap>().cells[0]
+        let wall_entity = restored.world.resource::<TileMap>().cells[1]
             .wall
             .unwrap()
             .0;
@@ -404,16 +451,21 @@ mod tests {
             .submit_command(
                 1,
                 Command::DamageWall {
-                    column: 0,
+                    column: 1,
                     row: 0,
                     damage: 100,
                 },
             )
             .unwrap();
         simulation.step(1);
+        let map = simulation.world.resource::<TileMap>();
+        assert!(map.route(&start, &goal).is_some());
         let destroyed = simulation.save_state();
         restored.restore_state(destroyed).unwrap();
-        assert!(restored.world.resource::<TileMap>().cells[0].wall.is_none());
+        let map = restored.world.resource::<TileMap>();
+        assert!(map.cells[1].wall.is_none());
+        assert_eq!(map.cost(1), Some(1));
+        assert!(map.route(&start, &goal).is_some());
     }
 
     #[test]
@@ -464,9 +516,10 @@ placements:
         let top_gap = simulation.world.resource::<TileMap>().cells[2].ground;
         simulation
             .world
-            .get_mut::<Ground>(top_gap)
-            .unwrap()
-            .passable = false;
+            .resource_scope(|world, mut map: bevy_ecs::prelude::Mut<TileMap>| {
+                world.get_mut::<Ground>(top_gap).unwrap().passable = false;
+                map.update_passability(world, 2);
+            });
 
         let mut crossed = false;
         for _ in 0..100 {
